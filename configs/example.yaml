@@ -1,0 +1,22 @@
+# Example Configuration for lsdyna-manual-builder
+
+manual:
+  release: "R14.0"
+  volume: "Volume I"
+  path: "/path/to/local/manual/ls-dyna_manual_volume_I_r14.pdf"
+
+parser:
+  provider: "openai-compatible"   # e.g., openai-compatible, custom-ocr, local-vision
+  model: "gpt-4o"
+  base_url: "https://api.example.com/v1"
+  api_key_env: "PARSER_API_KEY"   # Name of the environment variable containing the API key
+
+output:
+  workspace_dir: "./workspace/run_r14_vol1"
+  corpus_dir: "./workspace/run_r14_vol1/corpus"
+  reports_dir: "./workspace/run_r14_vol1/reports"
+
+options:
+  start_page: 1
+  end_page: null                  # null means parse until the last page
+  concurrency: 4
