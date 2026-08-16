@@ -36,9 +36,12 @@ env.bak/
 venv.bak/
 
 # User manuals & PDFs (Strictly prevent committing copyrighted content)
-manuals/
+manuals/*
 *.pdf
 *.PDF
+
+# Keep the manuals/ folder itself trackable (README only), never its contents
+!manuals/README.md
 
 # User local workspace & generated artifacts
 workspace/*
