@@ -1,47 +1,162 @@
-# Markdown Style Specification (v0.1 Draft)
+# Markdown Style Specification v0.1
 
-本文档说明生成的 Keyword Markdown 文档的组织规范与风格要求。
+本文档定义 `lsdyna-manual-builder` 生成的 Keyword Markdown 文档的组织结构与格式规则，是 `markdown` 模块 renderer 的实现依据。
 
-## 1. 基本组织原则
+## 1. 基本规则
 
-- **单 Keyword 单文件**：每个 LS-DYNA Keyword 独立生成一个 `.md` 文件（例如 `*MAT_024.md` 或 `*ELEMENT_SHELL.md`）。
-- **结构保持**：严格保留原始手册的语义层级，包括：
-  - Keyword 主标题与别名/选项；
-  - 简要描述（Purpose / Description）；
-  - Card 布局（以统一 Markdown 表格呈现）；
-  - Parameter 变量说明（字段含义、类型、默认值）；
-  - Remarks（详细备注与物理背景说明）；
-  - 物理与数学公式（以 LaTeX 语法呈现）。
-- **图片暂不处理**：当前版本暂不提取、重绘或处理 Manual 中的位图/矢量插图，可保留占位说明或文字描述。
+- 原文保持：最终 Markdown 保持 Manual 原始语言。Parser 与 LLM 不得添加中文翻译、参数类型重复说明、默认值重复说明、工程解释、推断结论或模型世界知识。
+- 条目即文件：Manual 中作为一个完整参考条目出现的内容对应一个 Markdown 文件，同一条目内的基础 Keyword 与 Option 保存在同一文件中。
+- 目录层级：`markdown/volume-N/family/keyword.md`，字段与路径规则见 `corpus-format.md`。
+- 图片：v0.1 不保存、不 OCR、不理解图片内容，仅输出占位符。
 
-## 2. 推荐 Markdown 结构模板
+## 2. Front Matter
+
+Manifest 是 Corpus 级权威索引，Front Matter 为单独读取 Markdown 文件提供最小自描述 metadata。两者的字段允许重叠，但应由同一个内部数据对象生成，不得独立维护。
+
+Front Matter 固定包含：
+
+```yaml
+---
+keyword_id: MAT_EXAMPLE
+name: "*MAT_EXAMPLE"
+family: MAT
+legacy_ids: []
+options:
+  - OPTION_A
+manual_release: "R13"
+volume: 2
+source_pages:
+  - pdf_page: 245
+    manual_page: "2-131"
+---
+```
+
+Front Matter 不保存 parser model、builder version、build time、API 配置和统计信息。这些信息记录在 `corpus.yaml` 中。
+
+## 3. 文档结构模板
+
+以下示例为 synthetic 的虚构 Keyword，仅用于说明 Markdown 结构，不对应任何真实 LS-DYNA Keyword。示例中的 `[Manual source text]` 为模板占位文本，表示该位置填入 Manual 原文。
 
 ```markdown
-# *KEYWORD_NAME
+---
+keyword_id: MAT_EXAMPLE
+name: "*MAT_EXAMPLE"
+family: MAT
+legacy_ids: []
+options:
+  - OPTION_A
+manual_release: "R13"
+volume: 2
+source_pages:
+  - pdf_page: 245
+    manual_page: "2-131"
+---
+
+# *MAT_EXAMPLE
 
 ## Purpose
-简要说明该关键字的作用与适用场景。
 
-## Card Summary
-（可选，说明该关键字包含多少组卡片及条件卡片关系）
+[Manual source text]
 
-## Card Definition
+## Options
+
+- 基础形式: *MAT_EXAMPLE
+- `OPTION_A`: *MAT_EXAMPLE_OPTION_A
+
+## Card Definitions
 
 ### Card 1
-| Field | Name 1 | Name 2 | Name 3 | Name 4 | Name 5 | Name 6 | Name 7 | Name 8 |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Type** | I | F | F | F | F | F | F | F |
-| **Default** | none | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
 
-### Variable Definitions
-- **Name 1** (`Type: I`, `Default: none`): 参数 1 的详细含义与取值约束。
-- **Name 2** (`Type: F`, `Default: 0.0`): 参数 2 的详细含义与取值约束。
+| Field | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Variable** | ID | P1 | P2 | FLAG | | | | |
+| **Type** | I | F | F | I | | | | |
+| **Default** | none | 0.0 | 0.0 | 0 | | | | |
+
+### Card 1a
+
+[Manual source text]
+
+| Field | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Variable** | P3 | P4 | | | | | | |
+| **Type** | F | F | | | | | | |
+
+## Variable Descriptions
+
+### ID
+
+[Manual source text]
+
+### P1
+
+[Manual source text]
+
+- `EQ.0`: [Manual source text]
+- `GT.0`: [Manual source text]
+
+### P2
+
+[Manual source text]
+
+### FLAG
+
+[Manual source text]
 
 ## Remarks
-1. **Remark 1**: 关于物理模型与计算稳定性的说明。
-2. **Remark 2**: 涉及公式说明：
-   $$ \sigma_{y} = \sigma_0 + E_p \varepsilon^p_{eff} $$
+
+1. [Manual source text]
+2. $$ e = \frac{v_1 - v_2}{v_1} $$
 
 ## References
-相关参考文献或标准引用说明。
+
+- [Manual source text]
 ```
+
+## 4. 格式规则
+
+### 4.1 Card 表格
+
+Card 表遵循 Manual 实际结构。常见数据行为 Variable、Type、Default 与 Remark；实际 Card 存在其他行时应按原文保留，不得为套用模板删除。
+
+Card 表应保留 Manual 显示的全部字段槽位，包括空字段。标准 8-field Card 保留全部 8 个位置，空位置具有排版与字段位置意义，不得截断。
+
+条件卡（如 Card 1a、Card 1b）作为独立三级小节与独立表格输出。条件说明只能来自 Manual，不得由 LLM 根据参数关系生成。
+
+### 4.2 Variable Descriptions
+
+每个变量使用三级标题。
+
+Variable Description 只保存 Manual 中属于该变量的原始说明内容。类型与默认值已存在于 Card 表，不得重复输出；Manual 原变量说明本身包含这些信息时按原文保留。
+
+### 4.3 取值条件
+
+EQ. / NE. / LT. / GT. 等操作符只做结构化排版，操作符原样保留，不得重新解释、扩写或改写：
+
+```markdown
+- `EQ.0`: [Manual source text]
+- `GT.0`: [Manual source text]
+```
+
+### 4.4 Options
+
+同一 Manual 条目下的基础 Keyword 与 Option 保存在同一个 Markdown 文件中，以 `## Options` 小节列出，不得因存在 Option 生成独立文件。
+
+### 4.5 公式
+
+公式按两级 fallback 输出：
+
+1. 优先输出 LaTeX，行内公式使用 `$...$`，独立公式使用 `$$...$$`；
+2. 公式无法可靠恢复为 LaTeX 时，保存 Parser 得到的原始 Unicode 或文本表达，并在 `issues.jsonl` 记录 warning，不得补写、推导或重构公式。
+
+### 4.6 图片占位
+
+统一输出占位符，占位符不描述图片内容：
+
+```markdown
+> [Figure omitted. See source: PDF page 245, manual page 2-131.]
+```
+
+### 4.7 References
+
+References 小节仅收录 Manual 明确出现的交叉引用，不得根据模型知识补充相关 Keyword。
