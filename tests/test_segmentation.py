@@ -66,6 +66,19 @@ def test_title_line_suffix_patterns():
     assert not pattern.match("*MAT_EXAMPLE_FLUID")    # separate entry
     assert not pattern.match("*MAT_EXAMPLE extra words")
 
+    # Real Manual variant lines seen across R13/R15/R17.
+    assert _title_line_re("*AIRBAG_WANG_NEFSKE").match(
+        "*AIRBAG_WANG_NEFSKE_{OPTIONS}"
+    )
+    assert _title_line_re("*AIRBAG_PARTICLE").match(
+        "*AIRBAG_PARTICLE_{OPTION1}_..._{OPTION6}"
+    )
+    family = _title_line_re("*CONSTRAINED_GENERALIZED_WELD", allow_family_token=True)
+    assert family.match("*CONSTRAINED_GENERALIZED_WELD_WELDTYPE_{OPTION}")
+    # Top-level chapters keep strict OPTION-only matching so child keywords
+    # are not mistaken for a variant declaration of the chapter base.
+    assert not _title_line_re("*AIRBAG").match("*AIRBAG_PARTICLE_{OPTION}")
+
 
 def test_alias_map_collision():
     pages = [
@@ -140,7 +153,13 @@ def test_inspect_volume_navigation():
     # non-keyword document section: keyword_id None, still navigable
     appendix = sections["APPENDIX A"]
     assert appendix.keyword_id is None
+    assert appendix.section_id == "APPENDIX_A"
+    assert appendix.kind == "document"
     assert appendix.pdf_pages == [7]
+
+    # keyword sections keep keyword_id and section_id aligned
+    assert sections["*MAT_EXAMPLE"].section_id == "MAT_EXAMPLE"
+    assert sections["*MAT_EXAMPLE"].keyword_id == "MAT_EXAMPLE"
 
     # TOC running header must not corrupt entry names
     assert all(
@@ -148,6 +167,173 @@ def test_inspect_volume_navigation():
     )
     assert result.stats["sections_keyword"] == 3
     assert result.stats["sections_document"] == 1
+    assert result.stats["issues_by_code"] == {}
+
+
+def _nested_document_pages():
+    """A synthetic front-matter chapter with nested TOC subsections."""
+    return [
+        # page 1: TOC with a document chapter, a subsection, and version leaves
+        "TABLE OF CONTENTS\n"
+        "INTRODUCTION .......................... 1-1\n"
+        "  CHRONOLOGICAL HISTORY ............... 1-1\n"
+        "    1989-1990 ......................... 1-2\n"
+        "  MATERIAL MODELS ..................... 1-3\n"
+        "GETTING STARTED ....................... 1-5\n"
+        "0-1 (TABLE OF CONTENTS)",
+        # pdf page 2: chapter + first subsection start
+        "INTRODUCTION\n"
+        "CHRONOLOGICAL HISTORY\n"
+        "history intro\n"
+        "1-1 (INTRODUCTION)",
+        # pdf page 3: version-history content (not selected as a section)
+        "INTRODUCTION\n"
+        "1989-1990\n"
+        "version notes\n"
+        "1-2 (INTRODUCTION)",
+        # pdf page 4: MATERIAL MODELS starts
+        "INTRODUCTION\n"
+        "MATERIAL MODELS\n"
+        "material overview\n"
+        "1-3 (INTRODUCTION)",
+        # pdf page 5: MATERIAL MODELS continuation
+        "INTRODUCTION\n"
+        "MATERIAL MODELS\n"
+        "more material notes\n"
+        "1-4 (INTRODUCTION)",
+        # pdf page 6: next document chapter starts
+        "INTRODUCTION\n"
+        "GETTING STARTED\n"
+        "getting started body\n"
+        "1-5 (INTRODUCTION)",
+    ]
+
+
+def test_nested_document_subsections_are_selected():
+    result = inspect_volume(2, "synthetic.pdf", FakeExtractor(_nested_document_pages()))
+
+    sections = {section.section_id: section for section in result.sections}
+
+    introduction = sections["INTRODUCTION"]
+    assert introduction.kind == "document"
+    assert introduction.keyword_id is None
+    assert introduction.pdf_pages == [2, 3, 4, 5, 6]
+
+    material_models = sections["INTRODUCTION_MATERIAL_MODELS"]
+    assert material_models.name == "MATERIAL MODELS"
+    assert material_models.kind == "document"
+    assert material_models.keyword_id is None
+    assert material_models.parent_section_id == "INTRODUCTION"
+    assert material_models.pdf_pages == [4, 5, 6]
+    assert material_models.manual_pages == ["1-3", "1-4", "1-5"]
+
+    # Version-history leaves remain excluded, while their parent subsection
+    # is selected.
+    assert "INTRODUCTION_CHRONOLOGICAL_HISTORY" in sections
+    assert not any(
+        section.section_id.endswith("_1989_1990") for section in result.sections
+    )
+
+    assert result.stats["toc_document_entries"] == 4
+    assert result.stats["sections_keyword"] == 0
+    assert result.stats["sections_document"] == 4
+    assert result.stats["sections_unresolved"] == 0
+    assert result.stats["issues_by_code"] == {}
+
+
+def test_duplicate_printed_page_numbers_choose_next_candidate():
+    pages = [
+        "TABLE OF CONTENTS\n"
+        "*MAT_FIRST ............................. 2-1\n"
+        "*MAT_SECOND ............................ 2-1\n"  # R12-style page reset
+        "0-1 (TABLE OF CONTENTS)",
+        # first 2-1 page
+        "*MAT\n"
+        "*MAT_FIRST\n"
+        "first body\n"
+        "2-1 (MAT)",
+        # continuation between the two 2-1 pages
+        "*MAT_FIRST\n"
+        "more first body\n"
+        "2-2 (MAT)",
+        # second 2-1 page, after the monotonic search cursor
+        "*MAT\n"
+        "*MAT_SECOND\n"
+        "second body\n"
+        "2-1 (MAT)",
+    ]
+    result = inspect_volume(2, "synthetic.pdf", FakeExtractor(pages))
+    sections = {section.section_id: section for section in result.sections}
+    assert sections["MAT_FIRST"].pdf_pages == [2, 3, 4]
+    assert sections["MAT_SECOND"].pdf_pages == [4]
+    assert result.stats["issues_by_code"] == {}
+
+
+def test_toc_page_error_falls_back_to_title_evidence():
+    pages = [
+        "TABLE OF CONTENTS\n"
+        "*MAT_EXAMPLE .......................... 2-1\n"
+        "*MAT_OTHER ............................. 2-1\n"  # TOC error: actual 2-3
+        "0-1 (TABLE OF CONTENTS)",
+        # pdf 2: MAT_EXAMPLE starts; MAT_OTHER is not titled here
+        "*MAT\n"
+        "*MAT_EXAMPLE\n"
+        "body\n"
+        "2-1 (MAT)",
+        # pdf 3: MAT_EXAMPLE continuation
+        "*MAT_EXAMPLE\n"
+        "continuation\n"
+        "2-2 (MAT)",
+        # pdf 4: actual MAT_OTHER start
+        "*MAT_OTHER\n"
+        "*MAT_OTHER\n"
+        "other body\n"
+        "2-3 (MAT)",
+    ]
+    result = inspect_volume(2, "synthetic.pdf", FakeExtractor(pages))
+    sections = {section.section_id: section for section in result.sections}
+    assert sections["MAT_OTHER"].pdf_pages == [4]
+    assert sections["MAT_EXAMPLE"].pdf_pages == [2, 3, 4]
+    assert any(
+        issue.code == "ANCHOR_CONFLICT" and issue.keyword_id == "MAT_OTHER"
+        for issue in result.issues
+    )
+
+
+def test_overview_list_mention_is_not_entry_start():
+    pages = [
+        "TABLE OF CONTENTS\n"
+        "*MAT_EXAMPLE .......................... 2-1\n"
+        "*MAT_OTHER ............................. 2-3\n"
+        "0-1 (TABLE OF CONTENTS)",
+        # pdf 2: MAT_EXAMPLE start
+        "*MAT\n"
+        "*MAT_EXAMPLE\n"
+        "body\n"
+        "2-1 (MAT)",
+        # pdf 3: overview page lists MAT_OTHER far below the running header
+        "*MAT_EXAMPLE\n"
+        "filler 1\n"
+        "filler 2\n"
+        "filler 3\n"
+        "filler 4\n"
+        "filler 5\n"
+        "filler 6\n"
+        "overview list:\n"
+        "*MAT_OTHER\n"
+        "2-2 (MAT)",
+        # pdf 4: actual MAT_OTHER start, no printed footer
+        "*MAT_EXAMPLE\n"
+        "*MAT_OTHER\n"
+        "other body",
+        # pdf 5: continuation
+        "*MAT_OTHER\n"
+        "more other body",
+    ]
+    result = inspect_volume(2, "synthetic.pdf", FakeExtractor(pages))
+    sections = {section.section_id: section for section in result.sections}
+    assert sections["MAT_OTHER"].pdf_pages[0] == 4
+    assert result.stats["sections_unresolved"] == 0
     assert result.stats["issues_by_code"] == {}
 
 
@@ -171,5 +357,7 @@ def test_write_artifacts(tmp_path):
     assert pagemap[1] == {"pdf_page": 2, "manual_page": "2-1", "evidence": "footer"}
     sections = json.loads((volume_dir / "sectionmap.json").read_text())
     assert sections[0]["keyword_id"] == "MAT_EXAMPLE"
+    assert sections[0]["section_id"] == "MAT_EXAMPLE"
+    assert sections[0]["kind"] == "keyword"
     summary = json.loads((out / "inspection_summary.json").read_text())
     assert summary["volumes"]["2"]["pdf_pages"] == 7
