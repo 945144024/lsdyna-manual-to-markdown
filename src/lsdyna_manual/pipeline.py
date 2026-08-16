@@ -72,8 +72,9 @@ def run_inspection(
             f"pagemap filled={stats['pagemap_filled']} "
             f"(none={stats['pagemap_none']}) "
             f"evidence={stats['evidence']} "
-            f"sections={stats['sections_located']}/"
-            f"{stats['toc_keyword_entries']}"
+            f"sections={stats['sections_located']} "
+            f"({stats['sections_keyword']} keyword, "
+            f"{stats['sections_document']} document)"
         )
         if stats["issues_by_code"]:
             log(f"      issues: {stats['issues_by_code']}")
