@@ -14,6 +14,8 @@
 
 项目处于早期开发阶段（v0.1.0-dev）。`lsdyna-manual build` 命令已提供配置加载、Manual 卷发现与元数据采集（sha256、页数）功能，并生成 Corpus 骨架与构建报告；PDF 解析与 Markdown 生成尚未实现，构建输出为 0 条目并如实报告。数据格式与接口规范见 `docs/`。
 
+下一阶段开发重点：建立并验证可靠的页面级解析与 Canonical PageIR（见 `docs/parser-interface.md`），在此基础上逐步实现 Section Reconstruction 与 Markdown Corpus 生成。
+
 ## 工作流
 
 项目目标工作流如下。

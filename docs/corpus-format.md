@@ -72,6 +72,8 @@ Manual 中作为一个完整参考条目出现的内容对应一个 Markdown 文
 - `pdf_page`：PDF 页面序号，整数，从 1 开始，应存在；
 - `manual_page`：Manual 印刷章-页编号，字符串，如 `"2-131"`，无法可靠识别时允许为 `null`。
 
+来源页信息由解析前的确定性阶段（PageMap / SectionMap，定义见 `parser-interface.md`）提供；`manifest.jsonl` 仍为来源追踪的权威索引。
+
 ## 5. corpus.yaml
 
 记录语料库级元数据与构建信息，不保存配置文件路径、`base_url`、API Key 及任何认证信息。
