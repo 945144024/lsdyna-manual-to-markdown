@@ -5,13 +5,14 @@
 ## 版权与使用说明
 
 - 本项目不提供、不分发、不内置任何版本的 LS-DYNA Manual（PDF 或其他形式的版权文本）；
+- LS-DYNA Manual 可从官方手册下载页获取：https://lsdyna.ansys.com/manuals-download/ ，本项目与 ANSYS 无关联，不镜像、不分发手册文件；
 - 用户需要自行准备合法获得的 LS-DYNA Manual 文件，存放于本地 `manuals/` 目录；
 - 用户需要自行配置并提供文档解析所需的后端服务与 API 凭证；
 - 仓库通过 `.gitignore` 排除 Manual PDF、API Key 与本地工作区数据，避免版权内容或密钥误入版本控制。
 
 ## 当前状态
 
-项目处于早期开发阶段（v0.1.0-dev）。当前仓库包含项目结构、数据格式规范与接口规范文档，尚未提供完整的自动化转换功能。
+项目处于早期开发阶段（v0.1.0-dev）。`lsdyna-manual build` 命令已提供配置加载、Manual 卷发现与元数据采集（sha256、页数）功能，并生成 Corpus 骨架与构建报告；PDF 解析与 Markdown 生成尚未实现，构建输出为 0 条目并如实报告。数据格式与接口规范见 `docs/`。
 
 ## 工作流
 
@@ -19,7 +20,7 @@
 
 ### 输入
 
-- Manual PDF：用户本地合法获取的 LS-DYNA Keyword Manual；
+- Manual PDF：从 LS-DYNA 官方手册下载页 https://lsdyna.ansys.com/manuals-download/ 获取所选版本的 Keyword User's Manual（三卷），保持原始文件名放入本地 `manuals/` 目录；
 - 配置文件：解析后端与转换参数，格式参见 `configs/example.yaml`。
 
 ### 输出
@@ -32,6 +33,15 @@
 - `reports/`：转换过程报告与质量问题清单。
 
 数据格式与输出规范的完整定义见 `docs/`。
+
+### 运行
+
+```bash
+pip install -e .
+lsdyna-manual build configs/example.yaml
+```
+
+命令按配置发现 `manuals/` 中的三卷 Manual，完成文件名校验、sha256 与页数采集后，在 `output.corpus_dir` 写入 Corpus 骨架（`corpus.yaml`、空的 `manifest.jsonl`、`markdown/` 目录）与构建报告。当前版本 PDF 解析与 Markdown 生成尚未实现，构建输出为 0 条目并在报告中如实说明。
 
 ## 仓库结构
 

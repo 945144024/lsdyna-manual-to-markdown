@@ -1,22 +1,26 @@
-# Example Configuration for lsdyna-manual-builder
+# Example configuration for lsdyna-manual-builder.
+# Relative paths are resolved against the working directory.
 
 manual:
-  release: "R14.0"
-  volume: "Volume I"
-  path: "/path/to/local/manual/ls-dyna_manual_volume_I_r14.pdf"
+  release: "R13"              # optional; cross-checked against the PDF filenames
+  manuals_dir: "./manuals"    # auto-discovery of the three Keyword Manual volumes
+  require_all_volumes: true   # fail if any of Volume I/II/III is missing
+  # volumes:                  # optional explicit paths; overrides auto-discovery
+  #   1: "manuals/LS-DYNA_Manual_Volume_I_R13.pdf"
+  #   2: "manuals/LS-DYNA_Manual_Volume_II_R13.pdf"
+  #   3: "manuals/LS-DYNA_Manual_Volume_III_R13.pdf"
 
 parser:
-  provider: "openai-compatible"   # e.g., openai-compatible, custom-ocr, local-vision
-  model: "gpt-4o"
+  provider: "openai-compatible"
+  model: "your-model-name"
   base_url: "https://api.example.com/v1"
-  api_key_env: "PARSER_API_KEY"   # Name of the environment variable containing the API key
+  api_key_env: "PARSER_API_KEY"  # the API key is read from this environment variable
 
 output:
-  workspace_dir: "./workspace/run_r14_vol1"
-  corpus_dir: "./workspace/run_r14_vol1/corpus"
-  reports_dir: "./workspace/run_r14_vol1/reports"
+  # Corpus root: corpus.yaml + manifest.jsonl + markdown/ + reports/
+  corpus_dir: "./workspace/run_r13"
 
 options:
   start_page: 1
-  end_page: null                  # null means parse until the last page
+  end_page: null              # null means until the last page
   concurrency: 4
