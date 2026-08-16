@@ -72,7 +72,9 @@ Manual 中作为一个完整参考条目出现的内容对应一个 Markdown 文
 - `pdf_page`：PDF 页面序号，整数，从 1 开始，应存在；
 - `manual_page`：Manual 印刷章-页编号，字符串，如 `"2-131"`，无法可靠识别时允许为 `null`。
 
-来源页信息由解析前的确定性阶段（PageMap / SectionMap，定义见 `parser-interface.md`）提供；`manifest.jsonl` 仍为来源追踪的权威索引。
+`manual_page` 是印刷标签而非卷内唯一键：不同 release 可能在同一卷中重置或重复印刷页码。来源定位与排序以 `pdf_page` 为权威，`manual_page` 用于人工对照。
+
+`source_pages` 由解析前的确定性阶段（PageMap / SectionMap，定义见 `parser-interface.md`）产生，是候选页范围：相邻条目可能共享边界页，范围内也可能包含 `manual_page` 为 `null` 的页面。`manifest.jsonl` 仍为来源追踪的权威索引。
 
 ## 5. corpus.yaml
 
@@ -165,7 +167,7 @@ Manifest 是 Corpus 级权威索引。每条记录只包含身份、来源、路
 - `volume`、`pdf_page`、`manual_page`：问题发生的位置；
 - `keyword_id`：问题归属的 Keyword。解析问题可能发生在 Keyword 边界恢复之前，无法归属时允许为 `null`；
 - `severity`：`info` / `warning` / `error` 之一；
-- `code`：离散问题标记，取值与 `parser-interface.md` 中的 `ParseIssue.code` 一致；
+- `code`：离散问题标记，取值应为 `parser-interface.md` 中登记的 issue code；
 - `message`：问题说明。
 
 页面级解析问题无法归属到具体 Keyword，示例如下：
