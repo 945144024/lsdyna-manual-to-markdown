@@ -38,7 +38,7 @@
 ```text
 lsdyna-manual-builder/
 ├── README.md               # 项目说明
-├── LICENSE                 # Apache-2.0
+├── LICENSE                 # MIT
 ├── pyproject.toml          # Python 项目与构建配置
 ├── .gitignore              # 排除 Manual、密钥与本地运行数据
 ├── docs/                   # 数据格式与接口规范
@@ -63,4 +63,4 @@ lsdyna-manual-builder/
 
 ## 许可证
 
-本项目采用 [Apache-2.0](LICENSE) 许可证。
+本项目采用 [MIT](LICENSE) 许可证。
