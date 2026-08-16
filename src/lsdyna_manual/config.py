@@ -31,9 +31,16 @@ class ManualConfig(BaseModel):
 
 class ParserConfig(BaseModel):
     provider: str = "openai-compatible"
-    model: str
-    base_url: str
-    api_key_env: str
+    model: str = "your-model-name"
+    # OpenAI-compatible endpoint base URL. Not used by paddleocr-vl-remote.
+    base_url: str | None = None
+    api_key_env: str = "PARSER_API_KEY"
+    # PaddleOCR-VL remote job endpoint. Only used by paddleocr-vl-remote.
+    job_url: str | None = None
+    timeout_seconds: int = 1800
+    poll_interval_seconds: int = 5
+    max_retries: int = 2
+    batch_size: int = 5
 
 
 class OutputConfig(BaseModel):
