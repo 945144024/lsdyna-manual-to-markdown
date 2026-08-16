@@ -71,22 +71,28 @@ PageMap，逐页的页码映射：
 class PageMapEntry:
     pdf_page: int            # 从 1 开始
     manual_page: str | None  # 如 "2-131"；无法识别时为 None
-    evidence: str            # "footer" | "anchor" | "interpolated"
+    evidence: str | None     # "footer" | "anchor" | "interpolated" | None
 ```
 
-`evidence` 记录该 manual_page 的确定性依据：
+`evidence` 记录该 manual_page 的确定性依据；当 `manual_page` 为 `None` 时，`evidence` 同为 `None`：
 
 - `footer`：页码由该页页脚直接印出；
 - `anchor`：该页为条目起始页，PDF 位置由正文 Keyword title 行定位，manual_page 来自对应 TOC 条目；
-- `interpolated`：仅在满足局部插值条件时填充——相邻两个 anchor 同章，且 PDF 页码差与 manual 页码差相等。
+- `interpolated`：仅在满足局部插值条件时填充——相邻两个 anchor 同章，且 PDF 页码差与 manual 页码差相等；
+- `None`：该页没有足够的页脚、锚点或局部插值证据，印刷页码未确定。
+
+PageMap 不假设 `manual_page` 在卷内唯一或全局单调。部分 release 会在子章节起始处重置印刷页码（例如同一卷内出现多个 `12-1`）。`pdf_page` 是唯一且全局有序的来源定位键；`manual_page` 是印刷标签，用于人工对照，允许重复、回退或缺失。
 
 SectionMap，Manual 条目到候选 PDF 页范围的映射：
 
 ```python
 class Section:
-    keyword_id: str | None          # Keyword 条目为规范化名称（规则同 corpus-format.md）；非 Keyword 文档章节为 None
+    section_id: str                 # SectionMap 唯一标识；Keyword 条目与 keyword_id 相同
+    keyword_id: str | None          # Keyword 条目为规范化名称（规则同 corpus-format.md）；文档章节为 None
     name: str                       # 完整条目名（Keyword 含 *）
     volume: int
+    kind: str                       # "keyword" | "document"
+    parent_section_id: str | None   # 文档子章节的顶层文档章节 section_id
     pdf_pages: list[int]            # 候选页集合，不构成严格分区
     manual_pages: list[str | None]
 ```
@@ -94,8 +100,12 @@ class Section:
 规则：
 
 - SectionMap 表示候选页集合，不要求条目间构成无重叠分区；相邻条目通常共享一个边界页（前一条目可能在页面中部结束），证据不足时允许保留更大的保守重叠并记 issue，由 Reconstruction 收敛；
-- SectionMap 可包含非 Keyword 文档章节（TOC 顶层非 Keyword 条目，如 INTRODUCTION、APPENDIX A..W），其 `keyword_id` 为 `None`；仅 Keyword 条目进入 manifest 与 Markdown 生成；
-- 条目起始页以正文 Keyword title 行（独立成行的 `*NAME`，或带 `_OPTION` / `_{OPTION}` 形式后缀的变体声明行）为首选定位证据；running header 存在滞后与别名形态，仅作为归属与校验证据，不单独作为起始页定位依据；
+- SectionMap 可包含非 Keyword 文档章节（TOC 顶层非 Keyword 条目，如 INTRODUCTION、GETTING STARTED、REFERENCES、APPENDIX A..W）及其嵌套 TOC 子章节；文档章节 `keyword_id` 为 `None`，`section_id` 为层次化标识（如 `INTRODUCTION_MATERIAL_MODELS`）；仅 `kind == "keyword"` 的条目进入 manifest 与 Markdown 生成；
+- Keyword 条目内部的 TOC 子标题（如 Card 名、Remarks）不是独立 SectionMap 条目，暂不选取；
+- 条目起始页采用“印刷页脚候选 + 正文标题核验”的双证据定位：TOC 印刷页码反查页脚得到候选页后，该页必须出现正文标题证据（独立成行的 `*NAME`，或变体声明行，如 `_OPTION`、`_{OPTIONS}`、`_{OPTION1}_..._{OPTION6}`；缩进的 family 条目允许一个前置 family token，如 `_WELDTYPE_{OPTION}`）。候选页无标题时向前搜索标题证据，优先采用正文标题并记 `ANCHOR_CONFLICT`，以兼容 Manual TOC 自身存在的页码错误；running header 存在滞后与别名形态，仅作为归属与校验证据，不单独作为起始页定位依据；
+- 无页脚区域按标题行单调搜索；第一遍只接受页面顶部附近的标题行，避免把 overview/family 页面正文列表中出现的子 Keyword 误判为条目起始页；
+- 同一印刷页码可能在同一卷内出现多次。footer 反查保持一对多候选，按单调游标选择第一个候选，并在同页码候选中优先选择页面顶部有强标题证据的页；页码回退若正好发生在已定位的 section 边界，视为合法的子章页码重置而非冲突；
+- TOC 文本与正文可能对同一字符使用 Unicode 兼容形式（如 `ﬂ` 与 `fl`）；标题比对前统一做 NFKD 归一化；
 - 边界证据不足时保留偏大的页范围并记 issue（如 `SECTION_BOUNDARY_UNCERTAIN`），不得猜测精确边界；
 - TOC 条目无法解析为页范围时记 issue 并跳过，不得虚构条目；
 - PageMap 与 SectionMap 是 `manifest.jsonl` 来源追踪（`source_pages`）的数据来源；manifest 仍为权威索引，见 `corpus-format.md`。
@@ -227,14 +237,17 @@ v0.1 不引入以下字段；是否需要由真实页面验证结论决定：
 
 ## 7. ParseIssue 生命周期
 
-各阶段均可产生 issue，随 PageIR 与 SectionMap 向下游传递，最终汇入 `reports/issues.jsonl`（字段定义见 `corpus-format.md`），并影响条目 `status`：
+各阶段均可产生 issue，随 PageIR 与 SectionMap 向下游传递，最终汇入 `reports/issues.jsonl`（字段定义见 `corpus-format.md`），并影响条目 `status`。当前登记的 code：
 
-- Inspection：`SECTION_BOUNDARY_UNCERTAIN`、`TOC_ENTRY_UNRESOLVED`、`MANUAL_PAGE_NOT_FOUND`、`ANCHOR_CONFLICT`；
+- Pipeline / Build：`VOLUME_MISSING`、`VOLUME_INGEST_FAILED`、`PARSE_NOT_IMPLEMENTED`；
+- Inspection：`SECTION_BOUNDARY_UNCERTAIN`、`TOC_ENTRY_UNRESOLVED`、`ANCHOR_CONFLICT`、`TOC_PAGE_TITLE_NOT_FOUND`；`MANUAL_PAGE_NOT_FOUND` 为预留 code；
 - Parsing：`PAGE_PARSE_FAILED`；
 - Adapter：`TABLE_STRUCTURE_UNCERTAIN`、`READING_ORDER_AMBIGUOUS`、`MATH_PARSE_WARNING`；
 - Validation：`TEXT_LAYER_DIVERGENCE`。
 
 `code` 为开放集合，新增 code 应在实现处登记语义。
+
+Inspection 的中间产物 `intermediate/volume-N/issues.jsonl` 使用 `InspectionIssue` 序列化；对非 Keyword 文档章节，该中间文件的 `keyword_id` 字段填入 `section_id`（如 `INTRODUCTION_MATERIAL_MODELS`）。最终 Corpus 报告 `reports/issues.jsonl` 的 `keyword_id` 仍遵循 `corpus-format.md`：仅真正归属于 Keyword 的问题填入 Keyword ID，否则为 `null`。
 
 ## 8. Reliable PageIR 验证计划
 
