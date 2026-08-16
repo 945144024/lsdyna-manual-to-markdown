@@ -12,7 +12,13 @@
 
 ## 当前状态
 
-项目处于早期开发阶段（v0.1.0-dev）。`lsdyna-manual build` 命令已提供配置加载、Manual 卷发现与元数据采集（sha256、页数）功能，并生成 Corpus 骨架与构建报告；PDF 解析与 Markdown 生成尚未实现，构建输出为 0 条目并如实报告。数据格式与接口规范见 `docs/`。
+项目处于早期开发阶段（v0.1.0-dev）。数据格式与接口规范见 `docs/`。
+
+当前已实现：
+
+- Manual 卷发现：支持 `LS-DYNA_Manual_Volume_*_R*` 与 `LS-DYNA_Manual_Vol_*_R*` 两类官方文件名形态，可在同一目录中按 `manual.release` 选择目标版本；开发测试覆盖 R12 至 R17；
+- `lsdyna-manual inspect`：确定性文档检查（PageMap / SectionMap）。检查不调用模型，产物写入 `output.corpus_dir/intermediate/`，覆盖 TOC 解析、页眉页脚识别、正文标题核验、无页脚区域搜索、重复印刷页码与 Unicode 兼容字符归一化等场景；
+- `lsdyna-manual build`：配置加载、Manual 卷发现、sha256 与页数采集，并生成 Corpus 骨架与构建报告。PDF 解析与 Markdown 生成尚未实现，构建输出为 0 条目并如实报告。
 
 下一阶段开发重点：建立并验证可靠的页面级解析与 Canonical PageIR（见 `docs/parser-interface.md`），在此基础上逐步实现 Section Reconstruction 与 Markdown Corpus 生成。
 
@@ -44,9 +50,22 @@ lsdyna-manual inspect configs/example.yaml   # 确定性文档检查（PageMap/S
 lsdyna-manual build configs/example.yaml     # 构建流水线（ingest 阶段）
 ```
 
-`inspect` 依赖 `pdftotext`（poppler-utils），在解析前利用 TOC、页眉页脚与文本层建立页面导航图，产物写入 `output.corpus_dir/intermediate/`。
+`inspect` 依赖 `pdftotext`（poppler-utils），在解析前利用 TOC、页眉页脚与文本层建立页面导航图，产物写入 `output.corpus_dir/intermediate/`：
 
-命令按配置发现 `manuals/` 中的三卷 Manual，完成文件名校验、sha256 与页数采集后，在 `output.corpus_dir` 写入 Corpus 骨架（`corpus.yaml`、空的 `manifest.jsonl`、`markdown/` 目录）与构建报告。当前版本 PDF 解析与 Markdown 生成尚未实现，构建输出为 0 条目并在报告中如实说明。
+```text
+intermediate/
+├── volume-1/
+│   ├── pagemap.json
+│   ├── sectionmap.json
+│   ├── toc_index.json
+│   ├── legacy_alias_map.json
+│   └── issues.jsonl
+├── volume-2/
+├── volume-3/
+└── inspection_summary.json
+```
+
+`build` 按配置发现 `manuals/` 中指定 release 的 Manual，默认要求三卷齐全；可通过 `manual.require_all_volumes: false` 允许缺卷，或通过 `manual.volumes` 显式指定路径。完成文件名校验、sha256 与页数采集后，在 `output.corpus_dir` 写入 Corpus 骨架（`corpus.yaml`、空的 `manifest.jsonl`、`markdown/` 目录）与构建报告。当前版本 PDF 解析与 Markdown 生成尚未实现，构建输出为 0 条目并在报告中如实说明。
 
 ## 仓库结构
 
@@ -70,8 +89,8 @@ lsdyna-manual-builder/
 │   └── cli/                # 命令行入口
 ├── configs/
 │   └── example.yaml        # 配置文件模板
-├── tests/
-│   └── synthetic/          # 合成测试数据，不含官方 Manual 内容
+├── tests/                  # 单元测试
+│   └── synthetic/          # 合成测试数据规范，不含官方 Manual 内容
 ├── manuals/                # 用户本地 Manual 存放目录，内容不进入版本控制
 └── workspace/              # 本地运行与输出目录，不进入版本控制
 ```
