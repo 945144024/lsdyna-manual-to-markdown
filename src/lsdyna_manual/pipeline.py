@@ -22,6 +22,12 @@ from lsdyna_manual.parser.discovery import (
     parse_manual_filename,
 )
 from lsdyna_manual.parser.ingest import VolumeIngestInfo, ingest_volume
+from lsdyna_manual.parser.segmentation import (
+    InspectionResult,
+    inspect_volume,
+    write_inspection_artifacts,
+)
+from lsdyna_manual.parser.text_extractor import PopplerLayoutExtractor
 
 EXIT_SUCCESS = 0
 EXIT_WARNING = 1
@@ -37,6 +43,41 @@ class BuildResult:
     release: str | None = None
     volumes: list[dict] = field(default_factory=list)
     issues: list[dict] = field(default_factory=list)
+
+
+def run_inspection(
+    config_path: Path | str, log: Callable[[str], None] = print
+) -> list[InspectionResult]:
+    """Run deterministic document inspection (PageMap/SectionMap) for the
+    configured volumes and write intermediate navigation artifacts."""
+    config_path = Path(config_path)
+    config = load_config(config_path)
+    log(f"lsdyna-manual-builder {__version__}")
+    log(f"[1/3] load config: {config_path}")
+
+    _release, infos, _missing = _resolve_volumes(config)
+    log(f"[2/3] inspect volumes: {[info.path.name for info in infos]}")
+    extractor = PopplerLayoutExtractor()
+    results = [inspect_volume(info.volume, info.path, extractor) for info in infos]
+
+    output_dir = config.output.corpus_dir / "intermediate"
+    log(f"[3/3] write navigation artifacts: {output_dir}")
+    write_inspection_artifacts(results, output_dir)
+
+    for result in results:
+        stats = result.stats
+        log(
+            f"      volume {result.volume}: pages={stats['pdf_pages']} "
+            f"footer={stats['footer_pages']} "
+            f"pagemap filled={stats['pagemap_filled']} "
+            f"(none={stats['pagemap_none']}) "
+            f"evidence={stats['evidence']} "
+            f"sections={stats['sections_located']}/"
+            f"{stats['toc_keyword_entries']}"
+        )
+        if stats["issues_by_code"]:
+            log(f"      issues: {stats['issues_by_code']}")
+    return results
 
 
 def run_build(config_path: Path | str, log: Callable[[str], None] = print) -> BuildResult:

@@ -40,8 +40,11 @@
 
 ```bash
 pip install -e .
-lsdyna-manual build configs/example.yaml
+lsdyna-manual inspect configs/example.yaml   # 确定性文档检查（PageMap/SectionMap）
+lsdyna-manual build configs/example.yaml     # 构建流水线（ingest 阶段）
 ```
+
+`inspect` 依赖 `pdftotext`（poppler-utils），在解析前利用 TOC、页眉页脚与文本层建立页面导航图，产物写入 `output.corpus_dir/intermediate/`。
 
 命令按配置发现 `manuals/` 中的三卷 Manual，完成文件名校验、sha256 与页数采集后，在 `output.corpus_dir` 写入 Corpus 骨架（`corpus.yaml`、空的 `manifest.jsonl`、`markdown/` 目录）与构建报告。当前版本 PDF 解析与 Markdown 生成尚未实现，构建输出为 0 条目并在报告中如实说明。
 

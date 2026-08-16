@@ -71,22 +71,31 @@ PageMap，逐页的页码映射：
 class PageMapEntry:
     pdf_page: int            # 从 1 开始
     manual_page: str | None  # 如 "2-131"；无法识别时为 None
+    evidence: str            # "footer" | "anchor" | "interpolated"
 ```
 
-SectionMap，Manual 条目到 PDF 页范围的映射：
+`evidence` 记录该 manual_page 的确定性依据：
+
+- `footer`：页码由该页页脚直接印出；
+- `anchor`：该页为条目起始页，PDF 位置由正文 Keyword title 行定位，manual_page 来自对应 TOC 条目；
+- `interpolated`：仅在满足局部插值条件时填充——相邻两个 anchor 同章，且 PDF 页码差与 manual 页码差相等。
+
+SectionMap，Manual 条目到候选 PDF 页范围的映射：
 
 ```python
 class Section:
     keyword_id: str                 # 规则与 corpus-format.md 的 keyword_id 一致
     name: str                       # 完整 Keyword 名，含 *
     volume: int
-    pdf_pages: list[int]
+    pdf_pages: list[int]            # 候选页集合，不构成严格分区
     manual_pages: list[str | None]
 ```
 
 规则：
 
-- 边界证据不足时，SectionMap 允许保留偏大的页范围并记 issue（如 `SECTION_BOUNDARY_UNCERTAIN`），由 Reconstruction 收敛；不得猜测精确边界；
+- SectionMap 表示候选页集合，不要求条目间构成无重叠分区；相邻条目通常共享一个边界页（前一条目可能在页面中部结束），证据不足时允许保留更大的保守重叠并记 issue，由 Reconstruction 收敛；
+- 条目起始页以正文 Keyword title 行（独立成行的 `*NAME`，或带 `_OPTION` / `_{OPTION}` 形式后缀的变体声明行）为首选定位证据；running header 存在滞后与别名形态，仅作为归属与校验证据，不单独作为起始页定位依据；
+- 边界证据不足时保留偏大的页范围并记 issue（如 `SECTION_BOUNDARY_UNCERTAIN`），不得猜测精确边界；
 - TOC 条目无法解析为页范围时记 issue 并跳过，不得虚构条目；
 - PageMap 与 SectionMap 是 `manifest.jsonl` 来源追踪（`source_pages`）的数据来源；manifest 仍为权威索引，见 `corpus-format.md`。
 
@@ -219,7 +228,7 @@ v0.1 不引入以下字段；是否需要由真实页面验证结论决定：
 
 各阶段均可产生 issue，随 PageIR 与 SectionMap 向下游传递，最终汇入 `reports/issues.jsonl`（字段定义见 `corpus-format.md`），并影响条目 `status`：
 
-- Inspection：`SECTION_BOUNDARY_UNCERTAIN`、`TOC_ENTRY_UNRESOLVED`、`MANUAL_PAGE_NOT_FOUND`；
+- Inspection：`SECTION_BOUNDARY_UNCERTAIN`、`TOC_ENTRY_UNRESOLVED`、`MANUAL_PAGE_NOT_FOUND`、`ANCHOR_CONFLICT`；
 - Parsing：`PAGE_PARSE_FAILED`；
 - Adapter：`TABLE_STRUCTURE_UNCERTAIN`、`READING_ORDER_AMBIGUOUS`、`MATH_PARSE_WARNING`；
 - Validation：`TEXT_LAYER_DIVERGENCE`。
