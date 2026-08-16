@@ -45,7 +45,7 @@ class TOCEntry:
 
 @dataclass
 class Section:
-    keyword_id: str
+    keyword_id: str | None  # Keyword 条目为规范化名称；非 Keyword 文档章节（如附录）为 None，不进入 manifest
     name: str
     volume: int
     pdf_pages: list[int]
@@ -159,7 +159,11 @@ def _parse_toc(pages: list[str], toc_pages: set[int]) -> list[TOCEntry]:
                 )
                 continue
             bare = TOC_BARE_NAME_RE.match(line)
+            # the running header on TOC pages is not an entry name; skipping
+            # it prevents it from being merged into the first entry below
             if bare is not None and bare.group(2):
+                if bare.group(2).strip().upper() == "TABLE OF CONTENTS":
+                    continue
                 pending = (len(bare.group(1)), bare.group(2))
     return entries
 
@@ -205,7 +209,14 @@ def _locate_entry_starts(
     for entry in entries:
         found = reverse_footer.get(entry.manual_page)
         if found is None:
-            pattern = _title_line_re(entry.name)
+            if entry.name.startswith("*"):
+                pattern = _title_line_re(entry.name)
+            else:
+                # document sections (appendices etc.): title lines look
+                # like "Appendix A. ..." - case-insensitive prefix match
+                pattern = re.compile(
+                    rf"^{re.escape(entry.name)}(?:[\s.:]|$)", re.IGNORECASE
+                )
             for index in range(search_from - 1, len(pages)):
                 pdf_page = index + 1
                 if pdf_page in toc_pages:
@@ -360,7 +371,7 @@ def _build_sections(
         pdf_pages = list(range(start, end + 1))
         sections.append(
             Section(
-                keyword_id=entry.name.lstrip("*"),
+                keyword_id=entry.name.lstrip("*") if entry.name.startswith("*") else None,
                 name=entry.name,
                 volume=volume,
                 pdf_pages=pdf_pages,
@@ -379,17 +390,27 @@ def inspect_volume(volume: int, pdf_path: Path, extractor: TextExtractor) -> Ins
     result.toc_index = _parse_toc(pages, toc_pages)
     result.legacy_alias_map = _scan_legacy_alias_map(pages)
 
-    keyword_entries = [entry for entry in result.toc_index if entry.name.startswith("*")]
-    # TOC indent depth semantics differ across volumes: Volume II lists
-    # independent *MAT_ADD_* entries at indent 12 (verified: every one
-    # has its own title line), while Volume I/III use indent 6 for
-    # variants and deeper indents for entry-internal subheadings which
-    # must stay out of the SectionMap. Allow indent 12 for Volume II
-    # only; for other volumes keep the 0/6 entry levels.
-    max_indent = 12 if volume == 2 else 6
-    keyword_entries = [
-        entry for entry in keyword_entries if entry.indent <= max_indent
-    ]
+    # Section candidates: every keyword TOC entry regardless of indent
+    # (deep-indented entries are real keywords - verified on the manuals;
+    # indentation encodes nesting, not entry-vs-subheading), deduplicated
+    # by first occurrence, plus top-level non-keyword document sections
+    # (INTRODUCTION, APPENDIX A..W, ...). Version-history sub-items and
+    # TOC running headers stay out.
+    version_like = re.compile(r"^(?:\d{2,}|R\d|9\d)")
+    chosen: list[TOCEntry] = []
+    seen: set[str] = set()
+    for entry in result.toc_index:
+        name = entry.name
+        if name.upper().startswith("TABLE OF CONTENTS"):
+            continue
+        if name.startswith("*"):
+            if name not in seen:
+                seen.add(name)
+                chosen.append(entry)
+        elif entry.indent == 0 and not version_like.match(name) and name not in seen:
+            seen.add(name)
+            chosen.append(entry)
+    keyword_entries = chosen
     starts = _locate_entry_starts(
         pages, keyword_entries, toc_pages, footer_map, result.issues, volume
     )
@@ -420,8 +441,12 @@ def inspect_volume(volume: int, pdf_path: Path, extractor: TextExtractor) -> Ins
         "pdf_pages": len(pages),
         "footer_pages": len(footer_map),
         "toc_entries_total": len(result.toc_index),
-        "toc_keyword_entries": len(keyword_entries),
+        "toc_keyword_entries": sum(
+            1 for e in keyword_entries if e.name.startswith("*")
+        ),
         "sections_located": len(result.sections),
+        "sections_keyword": sum(1 for s in result.sections if s.keyword_id is not None),
+        "sections_document": sum(1 for s in result.sections if s.keyword_id is None),
         "sections_unresolved": len(keyword_entries) - len(starts),
         "pagemap_filled": len(filled),
         "pagemap_none": len(pages) - len(filled),

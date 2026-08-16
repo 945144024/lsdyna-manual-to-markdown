@@ -80,12 +80,15 @@ def test_alias_map_collision():
 
 def _synthetic_volume_pages():
     """A miniature manual: TOC page, two entries with footers, then a
-    footer-less region where entry starts are located by title lines."""
+    footer-less region where entry starts are located by title lines,
+    plus a non-keyword appendix section."""
     return [
-        # page 1: TOC
+        # page 1: TOC (running header line must not be merged into entries)
+        "TABLE OF CONTENTS\n"
         "*MAT_EXAMPLE .......................... 2-1\n"
         "  *MAT_VARIANT ......................... 2-3\n"
         "*MAT_OTHER ............................. 2-5\n"
+        "APPENDIX A ............................. 2-6\n"
         "0-1 (TABLE OF CONTENTS)",
         # page 2: entry start (header lags: shows family name)
         "*MAT\n"
@@ -108,6 +111,11 @@ def _synthetic_volume_pages():
         "*MAT_VARIANT\n"
         "*MAT_OTHER\n"
         "other body",
+        # page 7: appendix section
+        "*MAT_OTHER\n"
+        "APPENDIX A. Synthetic appendix content\n"
+        "appendix body\n"
+        "2-6 (MAT)",
     ]
 
 
@@ -126,10 +134,20 @@ def test_inspect_volume_navigation():
     sections = {section.name: section for section in result.sections}
     assert sections["*MAT_EXAMPLE"].pdf_pages == [2, 3, 4]   # shares page 4
     assert sections["*MAT_VARIANT"].pdf_pages == [4, 5, 6]   # shares pages 4 and 6
-    assert sections["*MAT_OTHER"].pdf_pages == [6]
+    assert sections["*MAT_OTHER"].pdf_pages == [6, 7]        # shares page 7 with appendix
     assert sections["*MAT_VARIANT"].manual_pages == ["2-3", "2-4", "2-5"]
 
-    assert result.stats["sections_located"] == 3
+    # non-keyword document section: keyword_id None, still navigable
+    appendix = sections["APPENDIX A"]
+    assert appendix.keyword_id is None
+    assert appendix.pdf_pages == [7]
+
+    # TOC running header must not corrupt entry names
+    assert all(
+        "TABLE OF CONTENTS" not in section.name for section in result.sections
+    )
+    assert result.stats["sections_keyword"] == 3
+    assert result.stats["sections_document"] == 1
     assert result.stats["issues_by_code"] == {}
 
 
@@ -154,4 +172,4 @@ def test_write_artifacts(tmp_path):
     sections = json.loads((volume_dir / "sectionmap.json").read_text())
     assert sections[0]["keyword_id"] == "MAT_EXAMPLE"
     summary = json.loads((out / "inspection_summary.json").read_text())
-    assert summary["volumes"]["2"]["pdf_pages"] == 6
+    assert summary["volumes"]["2"]["pdf_pages"] == 7

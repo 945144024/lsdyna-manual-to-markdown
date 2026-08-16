@@ -84,8 +84,8 @@ SectionMap，Manual 条目到候选 PDF 页范围的映射：
 
 ```python
 class Section:
-    keyword_id: str                 # 规则与 corpus-format.md 的 keyword_id 一致
-    name: str                       # 完整 Keyword 名，含 *
+    keyword_id: str | None          # Keyword 条目为规范化名称（规则同 corpus-format.md）；非 Keyword 文档章节为 None
+    name: str                       # 完整条目名（Keyword 含 *）
     volume: int
     pdf_pages: list[int]            # 候选页集合，不构成严格分区
     manual_pages: list[str | None]
@@ -94,6 +94,7 @@ class Section:
 规则：
 
 - SectionMap 表示候选页集合，不要求条目间构成无重叠分区；相邻条目通常共享一个边界页（前一条目可能在页面中部结束），证据不足时允许保留更大的保守重叠并记 issue，由 Reconstruction 收敛；
+- SectionMap 可包含非 Keyword 文档章节（TOC 顶层非 Keyword 条目，如 INTRODUCTION、APPENDIX A..W），其 `keyword_id` 为 `None`；仅 Keyword 条目进入 manifest 与 Markdown 生成；
 - 条目起始页以正文 Keyword title 行（独立成行的 `*NAME`，或带 `_OPTION` / `_{OPTION}` 形式后缀的变体声明行）为首选定位证据；running header 存在滞后与别名形态，仅作为归属与校验证据，不单独作为起始页定位依据；
 - 边界证据不足时保留偏大的页范围并记 issue（如 `SECTION_BOUNDARY_UNCERTAIN`），不得猜测精确边界；
 - TOC 条目无法解析为页范围时记 issue 并跳过，不得虚构条目；
