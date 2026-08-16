@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
+from bisect import bisect_left
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,10 +46,31 @@ class TOCEntry:
 
 
 @dataclass
+class SectionSpec:
+    """One SectionMap candidate selected from the TOC.
+
+    ``section_id`` is the normalized identifier used in SectionMap and
+    issues. For Keyword entries it equals ``keyword_id``; for document
+    sections it is a hierarchical path such as
+    ``INTRODUCTION_MATERIAL_MODELS``.
+    """
+
+    section_id: str
+    name: str
+    manual_page: str
+    indent: int
+    kind: str  # "keyword" | "document"
+    parent_section_id: str | None = None
+
+
+@dataclass
 class Section:
-    keyword_id: str | None  # Keyword 条目为规范化名称；非 Keyword 文档章节（如附录）为 None，不进入 manifest
+    section_id: str
+    keyword_id: str | None  # None for non-Keyword document sections; use section_id for navigation
     name: str
     volume: int
+    kind: str  # "keyword" | "document"
+    parent_section_id: str | None
     pdf_pages: list[int]
     manual_pages: list[str | None]
 
@@ -97,17 +120,194 @@ def _page_number_of(manual_page: str) -> int:
     return int(manual_page.split("-")[1])
 
 
-def _title_line_re(name: str) -> re.Pattern[str]:
-    """Match a standalone entry title line: the exact keyword name, or the
-    name plus variant-declaration suffixes. A suffix starts with an
-    OPTION token (`_OPTION`, `_{OPTION}`, `_OPTION_MODEL`,
+def _title_line_re(name: str, *, allow_family_token: bool = False) -> re.Pattern[str]:
+    """Match a standalone entry title line or a variant-declaration line.
+
+    The exact name always matches. Variant suffixes start with an
+    OPTION token (`_OPTION`, `_OPTION_MODEL`, `_{OPTION2}`,
     `_OPTION1_{OPTION2}`); ordinary name extensions do not match
     (`*MAT_EXAMPLE_PLASTIC` is a different keyword, not a variant of
-    `*MAT_EXAMPLE`)."""
-    tail = r"(?:_[A-Z][A-Z0-9]*)*"
-    option = rf"_(?:OPTION[0-9]*|\{{OPTION[0-9]*\}}){tail}"
-    suffix = rf"(?:{option})*"
-    return re.compile(rf"^{re.escape(name)}{suffix}$")
+    `*MAT_EXAMPLE`). Real Manual titles also use plural OPTIONS,
+    ellipsis-separated option lists (`_..._`) and, for nested family
+    entries, one leading family token (`_WELDTYPE_{OPTION}`);
+    ``allow_family_token`` enables that last form for indented TOC
+    entries while top-level chapters keep the stricter OPTION-only form.
+    """
+    token = r"[A-Z][A-Z0-9]*"
+    braced_option = r"\{OPTION[A-Z0-9]*\}"
+    option = rf"(?:OPTION[A-Z0-9]*|{braced_option})"
+    if allow_family_token:
+        first = rf"_(?:{token}_)?{option}"
+    else:
+        first = rf"_{option}"
+    rest = rf"(?:_(?:{token}|{braced_option}))*"
+    ellipsis = rf"(?:_\.\.\.(?:_(?:{token}|{braced_option}))*)*"
+    suffix = first + rest + ellipsis
+    return re.compile(rf"^{re.escape(name)}(?:{suffix})?$")
+
+
+def _normalize_title_line(line: str) -> str:
+    # NFKD decomposes ligatures such as U+FB02 "ﬂ" to "fl"; Manual TOC
+    # text and body text are not always consistent about ligatures.
+    normalized = unicodedata.normalize("NFKD", line)
+    return re.sub(r"\s+", " ", normalized.strip())
+
+
+def _lines_have_title(
+    lines: list[str], spec: SectionSpec, *, skip_first: bool = False
+) -> bool:
+    if skip_first:
+        lines = lines[1:]
+    if spec.kind == "keyword":
+        pattern = _title_line_re(spec.name, allow_family_token=spec.indent > 0)
+        return any(pattern.match(_normalize_title_line(line)) for line in lines)
+
+    # Document sections may be titled with their full TOC name or, for
+    # appendix-style names, with the leading "APPENDIX X" token. A few
+    # titles wrap across two layout lines; the leading-token check keeps
+    # those valid without requiring exact wrapped-line reconstruction.
+    prefix = _normalize_title_line(spec.name.split(":", 1)[0]) or _normalize_title_line(
+        spec.name
+    )
+    pattern = re.compile(rf"^{re.escape(prefix)}(?:[\s.:]|$)", re.IGNORECASE)
+    return any(pattern.match(_normalize_title_line(line)) for line in lines)
+
+
+def _page_has_title(
+    page_text: str, spec: SectionSpec, *, skip_first: bool = False
+) -> bool:
+    return _lines_have_title(_page_lines(page_text), spec, skip_first=skip_first)
+
+
+def _page_has_title_in_top_lines(
+    page_text: str, spec: SectionSpec, *, skip_first: bool = True
+) -> bool:
+    """Title evidence near the top of a page is a strong entry-start signal.
+
+    Overview/family pages often mention child keywords in body lists far
+    below the running header. Restricting the first pass to the first few
+    non-empty lines after the running header avoids treating those
+    mentions as entry starts while still accepting normal title lines;
+    entries starting farther down a page are still recovered by the
+    second, whole-page pass.
+    """
+    lines = _page_lines(page_text)
+    window = lines[1:5] if skip_first else lines[:4]
+    return _lines_have_title(window, spec)
+
+
+def _find_title_page(
+    pages: list[str],
+    spec: SectionSpec,
+    start_page: int,
+    toc_pages: set[int],
+) -> int | None:
+    """Find a title-evidence page for ``spec`` starting at ``start_page``.
+
+    The first non-empty line is treated as a running header and skipped:
+    on continuation pages it often names the previous entry while the
+    body title names the entry that starts on that page. First pass:
+    only title lines near the top of a page (strong signal). Second pass:
+    any non-header title-like line, for entries that genuinely start
+    mid-page after a long preceding tail.
+    """
+    for use_strong_only in (True, False):
+        for index in range(max(start_page, 1) - 1, len(pages)):
+            pdf_page = index + 1
+            if pdf_page in toc_pages:
+                continue
+            page_text = pages[index]
+            if use_strong_only:
+                if _page_has_title_in_top_lines(page_text, spec):
+                    return pdf_page
+            elif _page_has_title(page_text, spec, skip_first=True):
+                return pdf_page
+    return None
+
+
+_VERSION_LIKE_RE = re.compile(r"^(?:\d{2,}|R\d|9\d)")
+
+
+def _section_id(name: str) -> str:
+    """Normalize a TOC name into an uppercase underscore-separated id.
+
+    Non-ASCII symbols are dropped (e.g. ``LS-PrePost®`` becomes
+    ``LS_PREPOST``); punctuation, slashes, spaces and colons become
+    underscores.
+    """
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", ascii_name).strip("_").upper()
+    return normalized or "UNTITLED"
+
+
+def _select_section_specs(toc_index: list[TOCEntry]) -> list[SectionSpec]:
+    """Select SectionMap candidates from the parsed TOC index.
+
+    Keyword entries (``*`` names) are selected regardless of indent and
+    deduplicated by first occurrence. Top-level non-keyword document
+    sections are selected together with their nested TOC subsections;
+    nested subsection ids are hierarchical paths such as
+    ``INTRODUCTION_MATERIAL_MODELS``. Version-history leaves (``R7.0``,
+    ``1989-1990``, ...) and TOC running headers stay out.
+    """
+    specs: list[SectionSpec] = []
+    seen_keyword_ids: set[str] = set()
+    seen_document_ids: set[str] = set()
+    document_root: SectionSpec | None = None
+
+    for entry in toc_index:
+        name = entry.name
+        if name.upper().startswith("TABLE OF CONTENTS"):
+            continue
+
+        if name.startswith("*"):
+            document_root = None
+            keyword_id = name[1:]
+            if keyword_id not in seen_keyword_ids:
+                seen_keyword_ids.add(keyword_id)
+                specs.append(
+                    SectionSpec(
+                        section_id=keyword_id,
+                        name=name,
+                        manual_page=entry.manual_page,
+                        indent=entry.indent,
+                        kind="keyword",
+                    )
+                )
+            continue
+
+        if entry.indent == 0:
+            document_root = None
+            if _VERSION_LIKE_RE.match(name):
+                continue
+            root_id = _section_id(name)
+            if root_id in seen_document_ids:
+                continue
+            seen_document_ids.add(root_id)
+            document_root = SectionSpec(
+                section_id=root_id,
+                name=name,
+                manual_page=entry.manual_page,
+                indent=entry.indent,
+                kind="document",
+            )
+            specs.append(document_root)
+        elif document_root is not None and not _VERSION_LIKE_RE.match(name):
+            child_id = f"{document_root.section_id}_{_section_id(name)}"
+            if child_id in seen_document_ids:
+                continue
+            seen_document_ids.add(child_id)
+            child = SectionSpec(
+                section_id=child_id,
+                name=name,
+                manual_page=entry.manual_page,
+                indent=entry.indent,
+                kind="document",
+                parent_section_id=document_root.section_id,
+            )
+            specs.append(child)
+
+    return specs
 
 
 def _scan_footers(pages: list[str]) -> tuple[dict[int, tuple[str, str]], set[int]]:
@@ -189,80 +389,148 @@ def _scan_legacy_alias_map(pages: list[str]) -> dict[str, list[str]]:
 
 def _locate_entry_starts(
     pages: list[str],
-    entries: list[TOCEntry],
+    specs: list[SectionSpec],
     toc_pages: set[int],
     footer_map: dict[int, tuple[str, str]],
     issues: list[InspectionIssue],
     volume: int,
 ) -> dict[str, int]:
-    """Locate the start page of each TOC entry.
+    """Locate the start page of each SectionMap candidate.
 
-    Where the entry's TOC page number maps back to a printed footer
-    (footer-reverse), that page is the start - the footer is printed
-    evidence and is not affected by keyword-name listings on overview or
-    family-introduction pages. Only in footer-less regions is the start
-    located by the body keyword title line, searched monotonically.
+    The printed footer map is the primary evidence: when the TOC page
+    number maps back to a printed footer page, that page is checked for a
+    matching body title line. If the title is missing there (the Manual
+    TOC itself contains page-number errors in several releases), a title
+    search runs forward and the stronger title evidence wins. In
+    footer-less regions the body title line is searched monotonically;
+    the first pass only accepts titles near the top of a page so overview
+    pages that merely list child keywords are not mistaken for starts.
     """
-    reverse_footer = {manual: pdf for pdf, (manual, _tag) in footer_map.items()}
+    # Some older releases (notably R12) reuse the same printed page number
+    # at several subchapter resets (multiple "12-1" pages). Keep all
+    # candidates and select the first one at/after the monotonic search
+    # cursor instead of letting a single-value reverse map hide earlier
+    # legitimate pages.
+    footer_candidates: dict[str, list[int]] = {}
+    for pdf_page, (manual_page, _tag) in sorted(footer_map.items()):
+        footer_candidates.setdefault(manual_page, []).append(pdf_page)
+
     starts: dict[str, int] = {}
     search_from = 1
-    for entry in entries:
-        found = reverse_footer.get(entry.manual_page)
-        if found is None:
-            if entry.name.startswith("*"):
-                pattern = _title_line_re(entry.name)
+
+    for spec in specs:
+        candidates = footer_candidates.get(spec.manual_page, [])
+        pos = bisect_left(candidates, search_from)
+        found: int | None = None
+
+        if pos < len(candidates):
+            # The same printed page number may legitimately appear multiple
+            # times. Prefer a candidate with a title near the top of the page;
+            # that distinguishes the real entry page from overview pages that
+            # list child keywords farther down in the body.
+            candidate_pages = candidates[pos:]
+            strong_candidate = next(
+                (
+                    candidate
+                    for candidate in candidate_pages
+                    if _page_has_title_in_top_lines(pages[candidate - 1], spec)
+                ),
+                None,
+            )
+            weak_candidate = next(
+                (
+                    candidate
+                    for candidate in candidate_pages
+                    if _page_has_title(pages[candidate - 1], spec)
+                ),
+                None,
+            )
+
+            if strong_candidate is not None:
+                found = strong_candidate
+            elif weak_candidate is not None:
+                # A weak match (title farther down the page) is still valid
+                # for entries that start mid-page; accepting it preserves
+                # coverage. The strong-first selection above already handles
+                # the common duplicate-page/overview-page ambiguity.
+                found = weak_candidate
             else:
-                # document sections (appendices etc.): title lines look
-                # like "Appendix A. ..." - case-insensitive prefix match
-                pattern = re.compile(
-                    rf"^{re.escape(entry.name)}(?:[\s.:]|$)", re.IGNORECASE
+                fallback_from = max(candidates[pos], search_from)
+                fallback = _find_title_page(
+                    pages, spec, fallback_from, toc_pages
                 )
-            for index in range(search_from - 1, len(pages)):
-                pdf_page = index + 1
-                if pdf_page in toc_pages:
-                    continue
-                lines = _page_lines(pages[index])
-                # skip the running header line (first non-empty line)
-                for line in lines[1:]:
-                    if pattern.match(line.strip()):
-                        found = pdf_page
-                        break
-                if found is not None:
-                    break
-            if found is not None and found < search_from:
-                issues.append(
-                    InspectionIssue(
-                        volume=volume,
-                        pdf_page=found,
-                        manual_page=entry.manual_page,
-                        keyword_id=entry.name.lstrip("*"),
-                        severity="warning",
-                        code="SECTION_BOUNDARY_UNCERTAIN",
-                        message=f"non-monotonic start for {entry.name}",
+                if fallback is not None:
+                    issues.append(
+                        InspectionIssue(
+                            volume=volume,
+                            pdf_page=fallback,
+                            manual_page=spec.manual_page,
+                            keyword_id=spec.section_id,
+                            severity="warning",
+                            code="ANCHOR_CONFLICT",
+                            message=(
+                                f"TOC reports {spec.manual_page} for {spec.name} "
+                                f"but footer candidate pdf page {candidates[pos]} "
+                                f"has no title; using title evidence at pdf page {fallback}"
+                            ),
+                        )
                     )
-                )
+                    found = fallback
+                else:
+                    issues.append(
+                        InspectionIssue(
+                            volume=volume,
+                            pdf_page=candidates[pos],
+                            manual_page=spec.manual_page,
+                            keyword_id=spec.section_id,
+                            severity="warning",
+                            code="TOC_PAGE_TITLE_NOT_FOUND",
+                            message=(
+                                f"TOC reports {spec.manual_page} for {spec.name} "
+                                f"and footer maps to pdf page {candidates[pos]}, "
+                                "but no title evidence was found there or forward"
+                            ),
+                        )
+                    )
+                    found = candidates[pos]
+        else:
+            found = _find_title_page(pages, spec, search_from, toc_pages)
+
         if found is None:
             issues.append(
                 InspectionIssue(
                     volume=volume,
                     pdf_page=None,
-                    manual_page=entry.manual_page,
-                    keyword_id=entry.name.lstrip("*"),
+                    manual_page=spec.manual_page,
+                    keyword_id=spec.section_id,
                     severity="warning",
                     code="TOC_ENTRY_UNRESOLVED",
-                    message=f"entry start page not located for {entry.name}",
+                    message=f"entry start page not located for {spec.name}",
                 )
             )
             continue
-        starts[entry.name] = found
-        search_from = found
+
+        if found < search_from:
+            issues.append(
+                InspectionIssue(
+                    volume=volume,
+                    pdf_page=found,
+                    manual_page=spec.manual_page,
+                    keyword_id=spec.section_id,
+                    severity="warning",
+                    code="SECTION_BOUNDARY_UNCERTAIN",
+                    message=f"non-monotonic start for {spec.name}",
+                )
+            )
+        starts[spec.section_id] = found
+        search_from = max(search_from, found)
     return starts
 
 
 def _build_pagemap(
     page_count: int,
     footer_map: dict[int, tuple[str, str]],
-    entries: list[TOCEntry],
+    specs: list[SectionSpec],
     starts: dict[str, int],
     volume: int,
     issues: list[InspectionIssue],
@@ -276,28 +544,35 @@ def _build_pagemap(
         manual_of[pdf_page] = manual_page
         evidence_of[pdf_page] = "footer"
 
-    for entry in entries:
-        start = starts.get(entry.name)
+    for spec in specs:
+        start = starts.get(spec.section_id)
         if start is None:
             continue
         if start in manual_of:
-            if manual_of[start] != entry.manual_page:
-                issues.append(
-                    InspectionIssue(
-                        volume=volume,
-                        pdf_page=start,
-                        manual_page=entry.manual_page,
-                        keyword_id=entry.name.lstrip("*"),
-                        severity="warning",
-                        code="ANCHOR_CONFLICT",
-                        message=(
-                            f"footer reports {manual_of[start]} but TOC reports "
-                            f"{entry.manual_page} for {entry.name}"
-                        ),
-                    )
+            if manual_of[start] != spec.manual_page:
+                duplicate = any(
+                    issue.code == "ANCHOR_CONFLICT"
+                    and issue.keyword_id == spec.section_id
+                    and issue.pdf_page == start
+                    for issue in issues
                 )
+                if not duplicate:
+                    issues.append(
+                        InspectionIssue(
+                            volume=volume,
+                            pdf_page=start,
+                            manual_page=spec.manual_page,
+                            keyword_id=spec.section_id,
+                            severity="warning",
+                            code="ANCHOR_CONFLICT",
+                            message=(
+                                f"footer reports {manual_of[start]} but TOC reports "
+                                f"{spec.manual_page} for {spec.name}"
+                            ),
+                        )
+                    )
             continue  # footer evidence wins; already recorded
-        manual_of[start] = entry.manual_page
+        manual_of[start] = spec.manual_page
         evidence_of[start] = "anchor"
 
     # local interpolation between consecutive anchors
@@ -316,8 +591,12 @@ def _build_pagemap(
             manual_of[pdf_page] = f"{_chapter_of(manual_of[prev])}-{page_no}"
             evidence_of[pdf_page] = "interpolated"
 
-    # global monotonic validation; violations are reported (they indicate
-    # conflicting evidence rather than something we silently repair)
+    # Global monotonic validation is defensive, but some Manual releases
+    # legitimately reset printed page numbers at a section boundary
+    # (R12 has several "12-1" pages inside the CONTROL chapter). Resets
+    # that coincide with a located section start are accepted; other
+    # decreases still indicate conflicting evidence.
+    section_start_pages = set(starts.values())
     known = sorted(manual_of)
     for prev, nxt in zip(known, known[1:]):
         if not (
@@ -327,6 +606,10 @@ def _build_pagemap(
                 and _page_number_of(manual_of[prev]) < _page_number_of(manual_of[nxt])
             )
         ):
+            if prev in section_start_pages or nxt in section_start_pages:
+                # Page-number resets at/near a located section boundary are
+                # common in older releases and are not conflicts.
+                continue
             issues.append(
                 InspectionIssue(
                     volume=volume,
@@ -353,27 +636,51 @@ def _build_pagemap(
 
 
 def _build_sections(
-    entries: list[TOCEntry],
+    specs: list[SectionSpec],
     starts: dict[str, int],
     pagemap: list[PageMapEntry],
     content_end: int,
     volume: int,
 ) -> list[Section]:
-    """Candidate pages per entry: [start_i, start_{i+1}] inclusive, so
-    adjacent sections share the boundary page by construction."""
-    located = [entry for entry in entries if entry.name in starts]
+    """Build SectionMap entries with candidate page ranges.
+
+    Keyword entries are flat candidates: each ends where the next selected
+    TOC entry starts, so adjacent keyword sections share a boundary page.
+    Document sections keep their chapter/subsection shape: a document root
+    spans until the next top-level TOC entry, while a document subsection
+    spans until the next selected subsection or chapter boundary.
+    """
+    located = [spec for spec in specs if spec.section_id in starts]
     sections: list[Section] = []
     manual_by_pdf = {entry.pdf_page: entry.manual_page for entry in pagemap}
-    for position, entry in enumerate(located):
-        start = starts[entry.name]
-        end = starts[located[position + 1].name] if position + 1 < len(located) else content_end
+
+    for position, spec in enumerate(located):
+        start = starts[spec.section_id]
+        if spec.kind == "keyword" or spec.parent_section_id is not None:
+            # Flat boundary: the next selected TOC entry, except that a
+            # document root is bounded by the next top-level entry (below).
+            if position + 1 < len(located):
+                end = starts[located[position + 1].section_id]
+            else:
+                end = content_end
+        else:
+            # Document root: include all of its subsections and stop at the
+            # next top-level entry (keyword chapter or document chapter).
+            end = content_end
+            for next_spec in located[position + 1 :]:
+                if next_spec.indent == 0:
+                    end = starts[next_spec.section_id]
+                    break
         end = max(end, start)
         pdf_pages = list(range(start, end + 1))
         sections.append(
             Section(
-                keyword_id=entry.name.lstrip("*") if entry.name.startswith("*") else None,
-                name=entry.name,
+                section_id=spec.section_id,
+                keyword_id=spec.section_id if spec.kind == "keyword" else None,
+                name=spec.name,
                 volume=volume,
+                kind=spec.kind,
+                parent_section_id=spec.parent_section_id,
                 pdf_pages=pdf_pages,
                 manual_pages=[manual_by_pdf.get(p) for p in pdf_pages],
             )
@@ -390,33 +697,13 @@ def inspect_volume(volume: int, pdf_path: Path, extractor: TextExtractor) -> Ins
     result.toc_index = _parse_toc(pages, toc_pages)
     result.legacy_alias_map = _scan_legacy_alias_map(pages)
 
-    # Section candidates: every keyword TOC entry regardless of indent
-    # (deep-indented entries are real keywords - verified on the manuals;
-    # indentation encodes nesting, not entry-vs-subheading), deduplicated
-    # by first occurrence, plus top-level non-keyword document sections
-    # (INTRODUCTION, APPENDIX A..W, ...). Version-history sub-items and
-    # TOC running headers stay out.
-    version_like = re.compile(r"^(?:\d{2,}|R\d|9\d)")
-    chosen: list[TOCEntry] = []
-    seen: set[str] = set()
-    for entry in result.toc_index:
-        name = entry.name
-        if name.upper().startswith("TABLE OF CONTENTS"):
-            continue
-        if name.startswith("*"):
-            if name not in seen:
-                seen.add(name)
-                chosen.append(entry)
-        elif entry.indent == 0 and not version_like.match(name) and name not in seen:
-            seen.add(name)
-            chosen.append(entry)
-    keyword_entries = chosen
+    section_specs = _select_section_specs(result.toc_index)
     starts = _locate_entry_starts(
-        pages, keyword_entries, toc_pages, footer_map, result.issues, volume
+        pages, section_specs, toc_pages, footer_map, result.issues, volume
     )
 
     result.pagemap = _build_pagemap(
-        len(pages), footer_map, keyword_entries, starts, volume, result.issues
+        len(pages), footer_map, section_specs, starts, volume, result.issues
     )
 
     header_token_re = re.compile(r"^\*[A-Za-z]")
@@ -428,7 +715,7 @@ def inspect_volume(volume: int, pdf_path: Path, extractor: TextExtractor) -> Ins
     content_end = max(content_end, max(starts.values(), default=1))
 
     result.sections = _build_sections(
-        keyword_entries, starts, result.pagemap, content_end, volume
+        section_specs, starts, result.pagemap, content_end, volume
     )
 
     filled = [e for e in result.pagemap if e.manual_page is not None]
@@ -441,13 +728,12 @@ def inspect_volume(volume: int, pdf_path: Path, extractor: TextExtractor) -> Ins
         "pdf_pages": len(pages),
         "footer_pages": len(footer_map),
         "toc_entries_total": len(result.toc_index),
-        "toc_keyword_entries": sum(
-            1 for e in keyword_entries if e.name.startswith("*")
-        ),
+        "toc_keyword_entries": sum(1 for e in section_specs if e.kind == "keyword"),
+        "toc_document_entries": sum(1 for e in section_specs if e.kind == "document"),
         "sections_located": len(result.sections),
-        "sections_keyword": sum(1 for s in result.sections if s.keyword_id is not None),
-        "sections_document": sum(1 for s in result.sections if s.keyword_id is None),
-        "sections_unresolved": len(keyword_entries) - len(starts),
+        "sections_keyword": sum(1 for s in result.sections if s.kind == "keyword"),
+        "sections_document": sum(1 for s in result.sections if s.kind == "document"),
+        "sections_unresolved": len(section_specs) - len(starts),
         "pagemap_filled": len(filled),
         "pagemap_none": len(pages) - len(filled),
         "evidence": evidence_counts,
