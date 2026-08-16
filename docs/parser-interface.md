@@ -127,12 +127,21 @@ provider-specific raw result
 Canonical PageIR
 ```
 
-- Provider：负责单页的后端访问与传输，返回 provider-specific raw result；
+- Provider：负责后端访问与传输，返回 provider-specific raw result；
 - Adapter：将 raw result 转换为 Canonical PageIR，转换中发现的问题记为 ParseIssue；
+- 语义解析单位是唯一的 `(volume, pdf_page)`，而不是 Keyword；SectionMap 候选页先合并去重，再形成 page-centric ParsePlan；
+- 多页 PDF batch 只是 transport optimization。Provider 返回多页结果后，必须按构建 batch 时的页面顺序拆回逐页 raw artifact 与 PageIR，`pdf_page` 身份不得依赖模型输出推断；
 - 对上层保留统一接口 `parse_page(page_input, options) -> PageIR`；raw result 与 Adapter 是该接口的内部实现；
 - 后端能可靠使用 structured decoding 直接产出 PageIR 兼容 JSON 时，允许作为一种 Adapter 实现方式，但不得作为 Provider 接口的前提。
 
-v0.1 的 Provider 类型为 `openai-compatible`；本地开发与测试后端为经 vLLM 部署的 PaddleOCR-VL（或其他 OpenAI 兼容端点）。
+v0.1 已登记的 Provider 类型：
+
+- `openai-compatible`：通用 OpenAI-compatible 文档解析端点；
+- `paddleocr-vl-remote`：PaddleOCR-VL 官方 remote job API；本地开发也可使用经 vLLM 部署的 PaddleOCR-VL OpenAI-compatible 端点。
+
+Reliable PageIR 验证阶段 raw artifact（JSON / JSONL / Paddle Markdown）应强制保存，作为 provenance 与人工检查材料；raw artifact 不是下游稳定接口。
+
+Cache / resume 以 page 为核心：transport batch 不进入缓存身份。Raw cache 身份至少包含 source PDF fingerprint、provider/model 与 output-affecting semantic config；PageIR cache 在 raw cache 之上再绑定 Adapter identity 与 PageIR schema version。修改 Adapter 时应允许复用 raw 并重建 PageIR，而不是重新请求 Provider。
 
 页眉页脚处理：Provider 阶段不删除页眉页脚，按 `HeaderBlock` 与 `FooterBlock` 输出，由下游阶段决定清理或利用。
 
@@ -284,8 +293,21 @@ Inspection 的中间产物 `intermediate/volume-N/issues.jsonl` 使用 `Inspecti
 
 ```yaml
 parser:
+  # OpenAI-compatible 端点使用 base_url。
   provider: "openai-compatible"
   model: "your-model-name"
   base_url: "https://api.example.com/v1"
   api_key_env: "PARSER_API_KEY"
+
+  # PaddleOCR-VL remote 使用 job_url；base_url 对其无效。
+  # provider: "paddleocr-vl-remote"
+  # model: "PaddleOCR-VL-1.6"
+  # job_url: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+  # api_key_env: "PADDLEOCR_API_KEY"
+
+  # paddleocr-vl-remote 可选传输参数：
+  # timeout_seconds: 1800
+  # poll_interval_seconds: 5
+  # max_retries: 2
+  # batch_size: 5
 ```
