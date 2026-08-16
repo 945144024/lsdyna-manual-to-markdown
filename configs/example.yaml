@@ -11,10 +11,23 @@ manual:
   #   3: "manuals/LS-DYNA_Manual_Volume_III_R13.pdf"
 
 parser:
+  # Example 1: OpenAI-compatible endpoint.
   provider: "openai-compatible"
   model: "your-model-name"
   base_url: "https://api.example.com/v1"
   api_key_env: "PARSER_API_KEY"  # the API key is read from this environment variable
+
+  # Example 2: PaddleOCR-VL remote job API.
+  # provider: "paddleocr-vl-remote"
+  # model: "PaddleOCR-VL-1.6"
+  # job_url: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+  # api_key_env: "PADDLEOCR_API_KEY"
+
+  # Optional settings for provider: "paddleocr-vl-remote".
+  # timeout_seconds: 1800
+  # poll_interval_seconds: 5
+  # max_retries: 2
+  # batch_size: 5
 
 output:
   # Corpus root: corpus.yaml + manifest.jsonl + markdown/ + reports/
