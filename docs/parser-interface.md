@@ -20,7 +20,7 @@ Section Reconstruction 与 Corpus Generation 在 PageIR 通过真实页面验证
 
 ## 2. 设计目标
 
-1. Provider 可替换：Provider 只负责单页解析的后端访问；Provider 原始输出与 Canonical PageIR 之间允许存在 provider-specific 表示与 Adapter；
+1. Provider 可替换：Provider 只负责 transport batch 的后端访问；语义解析单位仍由 Document Parser 保持为唯一页面。Provider 原始输出与 Canonical PageIR 之间允许存在 provider-specific 表示与 Adapter；
 2. IR 统一是软件接口契约：任何 Provider 的输出最终都转换为 Canonical PageIR，但不要求底层模型直接按 PageIR Schema 生成输出；
 3. 密钥隔离：配置文件只记录非敏感连接参数与密钥环境变量名，密钥不得进入日志、Corpus、报告或版本控制；
 4. 失败可恢复：单页失败不中断整卷处理，构建结果不得掩盖失败条目。
@@ -34,22 +34,34 @@ Section Reconstruction 与 Corpus Generation 在 PageIR 通过真实页面验证
 [ Document Inspection / Segmentation ]   确定性：TOC、页眉页脚、PDF 文本层
       │
       ▼
-[ SectionMap + PageMap ]                 Keyword→页范围；pdf_page↔manual_page
+[ SectionMap + PageMap ]                 Keyword→候选页；pdf_page↔manual_page
       │
       ▼
-[ Page Parsing / Provider ]              文档调度、单页解析、Provider Adapter
+[ ParsePlan ]                            page 去重；transport batch 组织
+      │
+      ▼
+[ Document Parser / Provider ]           页面调度、后端访问、raw result 获取
+      │
+      ▼
+[ Provider-specific raw artifact ]       provenance / debug，不进入下游接口
+      │
+      ▼
+[ Provider Adapter ]
       │
       ▼
 [ Canonical PageIR ]
       │
       ▼
-[ Normalization / Validation ]           manual_page 归一、文本层证据核对
+[ Normalization / Validation ]           manual_page 归一、结构校验、ParseIssue
       │
       ▼
-[ Section Reconstruction ]               确定性结构重建
+[ Reliable PageIR validation gate ]      10–20 代表性真实页面，尚未完成
       │
       ▼
-[ Markdown / Manifest Output ]
+[ Section Reconstruction ]               planned，尚未实现
+      │
+      ▼
+[ Markdown / Manifest Output ]           planned，尚未实现
 ```
 
 阶段边界原则：
@@ -110,15 +122,40 @@ class Section:
 - TOC 条目无法解析为页范围时记 issue 并跳过，不得虚构条目；
 - PageMap 与 SectionMap 是 `manifest.jsonl` 来源追踪（`source_pages`）的数据来源；manifest 仍为权威索引，见 `corpus-format.md`。
 
-### 4.2 Page Parsing：Provider 与 Adapter
+### 4.2 Page Parsing：ParsePlan、Provider 与 Adapter
 
-Document Parser 负责文档级调度：打开 PDF、枚举页面、页面渲染、调用解析、retry、cache、checkpoint、聚合 PageIR。
+Document Parser 负责页面级调度：读取 ParsePlan、生成 transport batch、调用 Provider、保存 raw artifact、调用 Adapter、生成并缓存 PageIR。
 
-解析后端分为两层：
+语义解析单位是唯一的 `(volume, pdf_page)`，不是 Keyword。SectionMap 中相邻 Keyword 可以共享边界页，因此候选页必须先合并去重，再进入解析。
+
+#### 4.2.1 ParsePlan
+
+```python
+class PagePlanEntry:
+    volume: int
+    pdf_page: int
+    manual_page: str | None
+    candidate_sections: tuple[str, ...]
+```
+
+`manual_page` 来自 PageMap。`candidate_sections` 只作为 Inspection provenance 供后续 Reconstruction 使用，不进入 Provider request，也不影响 Adapter 对页面的理解。
+
+连续的同卷页面可以组成 `ParseBatch`，用于多页 Provider API：
+
+```python
+class ParseBatch:
+    batch_id: int
+    volume: int
+    pdf_pages: tuple[int, ...]
+```
+
+`pdf_pages` 的顺序同时定义 Provider 多页结果中 `layoutParsingResults` 的顺序。batch 只是 transport optimization，不成为页面身份或缓存身份。
+
+#### 4.2.2 Provider 与 Adapter
 
 ```text
 provider-specific raw result
-（如 Paddle 管线的 Markdown/JSON、OpenAI-compatible 端点的模型输出）
+（如 PaddleOCR-VL remote 的 JSONL / Markdown）
       │
       ▼
 [ Provider Adapter ]
@@ -129,19 +166,90 @@ Canonical PageIR
 
 - Provider：负责后端访问与传输，返回 provider-specific raw result；
 - Adapter：将 raw result 转换为 Canonical PageIR，转换中发现的问题记为 ParseIssue；
-- 语义解析单位是唯一的 `(volume, pdf_page)`，而不是 Keyword；SectionMap 候选页先合并去重，再形成 page-centric ParsePlan；
-- 多页 PDF batch 只是 transport optimization。Provider 返回多页结果后，必须按构建 batch 时的页面顺序拆回逐页 raw artifact 与 PageIR，`pdf_page` 身份不得依赖模型输出推断；
-- 对上层保留统一接口 `parse_page(page_input, options) -> PageIR`；raw result 与 Adapter 是该接口的内部实现；
-- 后端能可靠使用 structured decoding 直接产出 PageIR 兼容 JSON 时，允许作为一种 Adapter 实现方式，但不得作为 Provider 接口的前提。
+- Provider 和 Adapter 都不接收 Keyword 归属信息，也不根据 Keyword 先验修改页面解析；
+- 多页 Provider 结果必须按 ParseBatch 的页面顺序拆回逐页 raw artifact 与 PageIR，`pdf_page` 身份不得依赖模型输出推断；
+- 当前仓库已实现的 transport Provider 是 `paddleocr-vl-remote`；配置层同时保留 `openai-compatible` Provider 名称，供后续接入兼容端点。
 
-v0.1 已登记的 Provider 类型：
+当前实现通过 `DocumentParser.parse_raw_for_volume()` 和 `DocumentParser.build_pageir_for_volume()` 暴露页面解析流程；单页 `parse_page()` 统一接口尚未暴露为稳定 API。
 
-- `openai-compatible`：通用 OpenAI-compatible 文档解析端点；
-- `paddleocr-vl-remote`：PaddleOCR-VL 官方 remote job API；本地开发也可使用经 vLLM 部署的 PaddleOCR-VL OpenAI-compatible 端点。
+#### 4.2.3 Raw artifact 与 workspace 布局
 
-Reliable PageIR 验证阶段 raw artifact（JSON / JSONL / Paddle Markdown）应强制保存，作为 provenance 与人工检查材料；raw artifact 不是下游稳定接口。
+Provider raw JSON / JSONL / Markdown 属于 workspace provenance 与调试材料，不是下游稳定接口。当前 Paddle raw bundle 按以下结构保存：
 
-Cache / resume 以 page 为核心：transport batch 不进入缓存身份。Raw cache 身份至少包含 source PDF fingerprint、provider/model 与 output-affecting semantic config；PageIR cache 在 raw cache 之上再绑定 Adapter identity 与 PageIR schema version。修改 Adapter 时应允许复用 raw 并重建 PageIR，而不是重新请求 Provider。
+```text
+<workspace>/parsing/
+├── state.json                     # page-level checkpoint
+├── raw/
+│   ├── .transport/                # 提交给 Provider 的临时 batch PDF
+│   └── paddleocr-vl-remote/
+│       └── <model>/
+│           └── batches/
+│               └── batch_0001/
+│                   ├── input.pdf
+│                   ├── raw_result.jsonl
+│                   ├── job.json
+│                   ├── page_map.json
+│                   └── pages/
+│                       ├── volume-2_page_000197.json
+│                       └── volume-2_page_000197.md
+└── pageir/
+    └── volume-2/
+        └── page_000197.json
+```
+
+具体根目录由调用方根据 `output.corpus_dir` / workspace 约定传入；生产代码不依赖操作系统临时目录。signed result URL 不写入 `job.json`。
+
+#### 4.2.4 Cache / resume
+
+Cache 以 page 为核心，transport batch 不进入缓存身份。
+
+Raw cache 身份：
+
+```text
+source PDF fingerprint
++ volume
++ pdf_page
++ provider
++ model
++ provider semantic identity
+```
+
+Provider semantic identity 只包含会影响模型输出内容的配置。`batch_size`、`timeout`、`poll_interval`、`max_retries` 属于 transport 参数，不使 raw cache 失效。
+
+PageIR cache 在 raw cache 之上增加：
+
+```text
+Adapter identity
++ PageIR schema version
+```
+
+因此修改 Adapter 后可以复用已保存的 raw artifact 重新生成 PageIR，而不会重新请求 Provider。
+
+当前状态值：
+
+- `raw_done`：Provider raw artifact 已成功保存；
+- `done`：PageIR 已成功生成并保存；
+- `failed`：该页面解析失败，可在后续运行中重试。
+
+默认失败不中断其他页面或 batch；失败页面记录错误后继续处理后续页面。
+
+#### 4.2.5 Header / Footer 与 manual_page
+
+Provider 阶段不删除页眉页脚。Paddle Adapter 从结构化 layout 结果生成 `HeaderBlock` 与 `FooterBlock`。
+
+`PageIR.manual_page` 的权威来源是 PageMap，不由 Provider Footer 反向决定。Provider Footer 保留为 `FooterBlock`，未来作为 Validation evidence。若 PageMap 与 Provider Footer 冲突，应记录 issue，不得让 Provider 静默覆盖 PageMap。
+
+#### 4.2.6 Adapter 与 Reconstruction 的边界
+
+Adapter 的职责是忠实映射：
+
+```text
+provider raw result → Canonical PageIR
+```
+
+Adapter 不执行 LS-DYNA-specific 结构修复。真实 Provider 输出可能将 Variable / Type / Default 拆成多个 TableBlock，或把 Card 标题放入第一列形成额外列；这些现象只应保留为 PageIR / raw artifact 观察结果，不应在 Adapter 中通过 Card 语义猜测、合并或删除。
+
+无法可靠映射时，保留 raw artifact 并产生明确 ParseIssue。
 
 页眉页脚处理：Provider 阶段不删除页眉页脚，按 `HeaderBlock` 与 `FooterBlock` 输出，由下游阶段决定清理或利用。
 
@@ -151,8 +259,7 @@ Cache / resume 以 page 为核心：transport batch 不进入缓存身份。Raw 
 单页失败
 → 按配置重试
 → 仍失败
-→ 记录 issue
-→ 标记相关条目 warning / failed
+→ 记录 ParseIssue / failed state
 → 继续处理后续页面
 ```
 
@@ -160,11 +267,17 @@ Cache / resume 以 page 为核心：transport batch 不进入缓存身份。Raw 
 
 ### 4.3 Normalization / Validation
 
+当前已实现：`PageIR` 结构校验与 `pdf_page` 身份校验，`manual_page` 由 PageMap 填入。
+
+规范定义但尚未实现：PDF 文本层与视觉解析结果的自动比对（`TEXT_LAYER_DIVERGENCE`）。
+
 - `manual_page` 归一：`PageIR.manual_page` 以 PageMap 为基准填充与核对，不要求 Provider 理解印刷页码；
 - PDF 文本层定位为 Evidence / Validation Source：将视觉解析结果与文本层证据比对，冲突时记录 issue（如 `TEXT_LAYER_DIVERGENCE`），不得静默覆盖视觉解析内容；
 - v0.1 不定义任何自动修复规则；仅当某类错误模式被证明可以安全地确定性修复后，才允许增加 repair rule，且修复行为应记 issue 说明。
 
-### 4.4 Section Reconstruction
+### 4.4 Section Reconstruction（planned）
+
+当前尚未实现。目标职责：
 
 - 输入：按 SectionMap 聚合的 Canonical PageIR 与 SectionMap 本身；
 - 职责：Keyword 边界确认（与 SectionMap 不一致时收敛并记 issue）、跨页块合并、Card / Variable Description / Remarks 结构恢复；
@@ -175,6 +288,8 @@ Cache / resume 以 page 为核心：transport batch 不进入缓存身份。Raw 
 Reconstruction 根据跨页重复模式与 Manual 结构判断哪些页眉页脚内容应清理，哪些内容可用于 Keyword 归属核对与 Manual 页码恢复。
 
 ## 6. Canonical PageIR v0.1（待验证 schema）
+
+当前代码已实现 v0.1 数据模型、JSON 序列化与基础结构校验。这里“v0.1”是当前软件接口边界；字段集合尚未最终确定，必须等待代表性真实页面验证结论。
 
 ### 6.1 PageIR
 
@@ -252,7 +367,8 @@ v0.1 不引入以下字段；是否需要由真实页面验证结论决定：
 - Inspection：`SECTION_BOUNDARY_UNCERTAIN`、`TOC_ENTRY_UNRESOLVED`、`ANCHOR_CONFLICT`、`TOC_PAGE_TITLE_NOT_FOUND`；`MANUAL_PAGE_NOT_FOUND` 为预留 code；
 - Parsing：`PAGE_PARSE_FAILED`；
 - Adapter：`TABLE_STRUCTURE_UNCERTAIN`、`READING_ORDER_AMBIGUOUS`、`MATH_PARSE_WARNING`；
-- Validation：`TEXT_LAYER_DIVERGENCE`。
+- PageIR / Validation：`PAGEIR_INVALID_PDF_PAGE`、`PAGEIR_PAGE_IDENTITY_MISMATCH`、`PAGEIR_INVALID_BBOX`、`PAGEIR_INVALID_TABLE_ROW`、`PAGEIR_INVALID_TABLE_COLUMN`、`PAGEIR_INVALID_ISSUE_SEVERITY`；
+- Validation（planned）：`TEXT_LAYER_DIVERGENCE`。
 
 `code` 为开放集合，新增 code 应在实现处登记语义。
 
@@ -286,7 +402,7 @@ Inspection 的中间产物 `intermediate/volume-N/issues.jsonl` 使用 `Inspecti
 
 配置分为两层：
 
-- `provider`、`model`、`base_url` 等非敏感连接参数由配置文件提供；
+- `provider`、`model`、`base_url`、`job_url` 等非敏感连接参数由配置文件提供；其中 `base_url` 仅用于 `openai-compatible`，`job_url` 仅用于 `paddleocr-vl-remote`；
 - API Key 不直接写入配置文件。配置文件只记录 `api_key_env`，程序运行时通过该环境变量读取密钥。
 
 密钥不得进入日志、Corpus、报告或版本控制。

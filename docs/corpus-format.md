@@ -6,6 +6,8 @@
 
 用户提供合法获得的指定版本 LS-DYNA Keyword Manual，并配置自己的解析 API。本项目将 Manual 在本地转换为结构稳定、来源可追溯、适合 LLM 读取的 Markdown Corpus。
 
+本文档定义目标 Corpus 格式。当前 v0.1 开发阶段尚未完成 Section Reconstruction 与最终 Keyword Markdown Renderer，因此本节描述的是最终可分发 Corpus 的契约，不代表当前 `build` 命令已经产生这些产物。
+
 v0.1 是格式转换与结构重建工具，不是翻译器、总结器或技术内容改写器。最终 Markdown 保持 Manual 原始语言，Parser 与 LLM 不得添加解释、翻译、工程常识、推断结论或原文不存在的技术信息。
 
 v0.1 不涉及 RAG、MCP、`.k` 文件解析、Keyword Validator、LSP、Embedding、知识图谱与多版本比较。
@@ -20,6 +22,8 @@ v0.1 不涉及 RAG、MCP、`.k` 文件解析、Keyword Validator、LSP、Embeddi
 - Keyword 条目包含 Card 表格、Variable Description、Remarks 等结构。
 
 ## 3. 目录结构
+
+最终 Corpus 只包含以下可分发产物。解析过程中产生的 raw artifact、PageIR、checkpoint 与临时 transport PDF 属于 workspace 本地中间产物，由 `parser-interface.md` 定义，不进入 Corpus。
 
 ```text
 corpus_root/
@@ -96,8 +100,9 @@ manual:
       sha256: "…"
 builder:
   version: "0.1.0-dev"
-  parser_provider: "openai-compatible"
-  parser_model: "your-model-name"
+  # 记录实际构建使用的 Provider；取值取决于配置。
+  parser_provider: "<provider used for the build>"
+  parser_model: "<provider model name>"
   timestamp: "2026-08-16T00:00:00Z"
 stats:
   entry_count: 1234

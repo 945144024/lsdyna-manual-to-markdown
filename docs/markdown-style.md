@@ -2,13 +2,15 @@
 
 本文档定义 `lsdyna-manual-builder` 生成的 Keyword Markdown 文档的组织结构与格式规则，是 `markdown` 模块 renderer 的实现依据。
 
+> 本文档描述的是目标 Corpus Markdown 格式。当前 v0.1 开发阶段尚未进入 Section Reconstruction 与最终 Markdown Renderer；Provider 返回的 raw Markdown（如 PaddleOCR-VL remote Markdown）不属于本文档定义的产品格式。实现状态见 `README.md` 与 `docs/parser-interface.md`。
+
 ## 1. 基本规则
 
 - 原文保持：最终 Markdown 保持 Manual 原始语言。Parser 与 LLM 不得添加中文翻译、参数类型重复说明、默认值重复说明、工程解释、推断结论或模型世界知识。
 - 条目即文件：Manual 中作为一个完整参考条目出现的内容对应一个 Markdown 文件，同一条目内的基础 Keyword 与 Option 保存在同一文件中。
 - 生成范围：仅 SectionMap 中 `kind == "keyword"` 的条目生成 Markdown；非 Keyword 文档章节不生成文件。
 - 目录层级：`markdown/volume-N/family/keyword.md`，字段与路径规则见 `corpus-format.md`。
-- 来源页码：Front Matter 的 `source_pages` 来自 SectionMap 候选范围，`manual_page` 可能重复或为 `null`，应原样输出，不做去重、补齐或“修正”。
+- 来源页码：Front Matter 的 `source_pages` 来自 SectionMap 候选范围，`manual_page` 可能重复或为 `null`，应原样输出，不做去重、补齐或“修正”；Provider raw Markdown 不直接作为本节定义的最终 Keyword Markdown。
 - 图片：v0.1 不保存、不 OCR、不理解图片内容，仅输出占位符。
 
 ## 2. Front Matter
