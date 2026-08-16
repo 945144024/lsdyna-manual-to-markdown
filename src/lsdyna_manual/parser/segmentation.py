@@ -380,7 +380,16 @@ def inspect_volume(volume: int, pdf_path: Path, extractor: TextExtractor) -> Ins
     result.legacy_alias_map = _scan_legacy_alias_map(pages)
 
     keyword_entries = [entry for entry in result.toc_index if entry.name.startswith("*")]
-    keyword_entries = [e for e in keyword_entries if e.indent <= 6]
+    # TOC indent depth semantics differ across volumes: Volume II lists
+    # independent *MAT_ADD_* entries at indent 12 (verified: every one
+    # has its own title line), while Volume I/III use indent 6 for
+    # variants and deeper indents for entry-internal subheadings which
+    # must stay out of the SectionMap. Allow indent 12 for Volume II
+    # only; for other volumes keep the 0/6 entry levels.
+    max_indent = 12 if volume == 2 else 6
+    keyword_entries = [
+        entry for entry in keyword_entries if entry.indent <= max_indent
+    ]
     starts = _locate_entry_starts(
         pages, keyword_entries, toc_pages, footer_map, result.issues, volume
     )
