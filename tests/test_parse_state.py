@@ -9,6 +9,7 @@ def test_parse_state_store_roundtrip_and_resume(tmp_path):
 
     store.set(
         PageParseState(
+            document_id="keyword-volume-2",
             volume=2,
             pdf_page=197,
             status="raw_done",
@@ -22,7 +23,7 @@ def test_parse_state_store_roundtrip_and_resume(tmp_path):
 
     reloaded = ParseStateStore(path)
     assert reloaded.is_raw_done(
-        2,
+        "keyword-volume-2",
         197,
         provider="paddleocr-vl-remote",
         model="PaddleOCR-VL-1.6",
@@ -30,7 +31,7 @@ def test_parse_state_store_roundtrip_and_resume(tmp_path):
         semantic_config_hash="semantic-1",
     )
     assert not reloaded.is_raw_done(
-        2,
+        "keyword-volume-2",
         197,
         provider="other-provider",
         model="PaddleOCR-VL-1.6",
@@ -38,7 +39,7 @@ def test_parse_state_store_roundtrip_and_resume(tmp_path):
         semantic_config_hash="semantic-1",
     )
     assert not reloaded.is_raw_done(
-        2,
+        "keyword-volume-2",
         197,
         provider="paddleocr-vl-remote",
         model="PaddleOCR-VL-1.6",
@@ -46,7 +47,7 @@ def test_parse_state_store_roundtrip_and_resume(tmp_path):
         semantic_config_hash="semantic-1",
     )
     assert not reloaded.is_done(
-        2,
+        "keyword-volume-2",
         197,
         provider="paddleocr-vl-remote",
         model="PaddleOCR-VL-1.6",
@@ -62,6 +63,7 @@ def test_pageir_cache_identity_distinguishes_adapter_and_schema(tmp_path):
     store = ParseStateStore(path)
     store.set(
         PageParseState(
+            document_id="keyword-volume-2",
             volume=2,
             pdf_page=197,
             status="done",
@@ -74,7 +76,7 @@ def test_pageir_cache_identity_distinguishes_adapter_and_schema(tmp_path):
         )
     )
     assert store.is_done(
-        2,
+        "keyword-volume-2",
         197,
         provider="paddleocr-vl-remote",
         model="PaddleOCR-VL-1.6",
@@ -84,7 +86,7 @@ def test_pageir_cache_identity_distinguishes_adapter_and_schema(tmp_path):
         pageir_schema_version="0.1",
     )
     assert not store.is_done(
-        2,
+        "keyword-volume-2",
         197,
         provider="paddleocr-vl-remote",
         model="PaddleOCR-VL-1.6",
@@ -94,7 +96,7 @@ def test_pageir_cache_identity_distinguishes_adapter_and_schema(tmp_path):
         pageir_schema_version="0.1",
     )
     assert not store.is_done(
-        2,
+        "keyword-volume-2",
         197,
         provider="paddleocr-vl-remote",
         model="PaddleOCR-VL-1.6",

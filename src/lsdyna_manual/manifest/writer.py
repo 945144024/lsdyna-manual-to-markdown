@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 
 from lsdyna_manual import __version__
-from lsdyna_manual.parser.ingest import VolumeIngestInfo
+from lsdyna_manual.parser.ingest import DocumentIngestInfo
 
 VOLUME_NAMES = {1: "Volume I", 2: "Volume II", 3: "Volume III"}
 
@@ -18,30 +18,41 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _document_record(document: DocumentIngestInfo) -> dict:
+    name = (
+        "Theory Manual"
+        if document.manual_type == "theory"
+        else f"Keyword Manual {VOLUME_NAMES[document.volume]}"
+    )
+    return {
+        "document_id": document.document_id,
+        "manual_type": document.manual_type,
+        "volume": document.volume,
+        "name": name,
+        "source_file": document.source_file,
+        "pdf_page_count": document.pdf_page_count,
+        "sha256": document.sha256,
+        "support_level": document.support_level,
+    }
+
+
 def write_corpus(
     corpus_dir: Path,
     *,
     release: str,
-    volumes: list[VolumeIngestInfo],
+    documents: list[DocumentIngestInfo],
     parser_provider: str,
     parser_model: str,
 ) -> None:
     """Write corpus.yaml. Entry stats stay zero until parsing is implemented."""
     _ensure_dirs(corpus_dir)
+    document_records = [_document_record(document) for document in documents]
     data = {
         "schema_version": "0.1",
         "manual": {
-            "product": "LS-DYNA Keyword User's Manual",
+            "product": "LS-DYNA Manuals",
             "release": release,
-            "volumes": [
-                {
-                    "name": VOLUME_NAMES[volume.volume],
-                    "source_file": volume.source_file,
-                    "pdf_page_count": volume.pdf_page_count,
-                    "sha256": volume.sha256,
-                }
-                for volume in volumes
-            ],
+            "documents": document_records,
         },
         "builder": {
             "version": __version__,

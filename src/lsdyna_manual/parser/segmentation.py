@@ -23,12 +23,14 @@ from bisect import bisect_left
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lsdyna_manual.documents import MANUAL_TYPE_KEYWORD, MANUAL_TYPE_THEORY, ManualDocument
 from lsdyna_manual.parser.text_extractor import TextExtractor
 
 FOOTER_RE = re.compile(r"(\d+)-(\d+)\s*\(([^)]+)\)")
 TOC_DOTTED_RE = re.compile(r"^(\s*)(\S.*?)\s*\.{3,}\s*(\d+-\d+)\s*$")
 TOC_BARE_NAME_RE = re.compile(r"^(\s*)(\*?[A-Za-z][A-Za-z0-9_()/ ]*?)\s*$")
 ALIAS_LINE_RE = re.compile(r"^\s*\*(MAT_\d+[A-Z_]*)\s*:\s+\*([A-Z][A-Z0-9_]*)")
+THEORY_TOC_ENTRY_RE = re.compile(r"^(?P<number>\d+(?:\.\d+)*)\s+(?P<title>.+)$")
 
 
 @dataclass
@@ -59,34 +61,41 @@ class SectionSpec:
     name: str
     manual_page: str
     indent: int
-    kind: str  # "keyword" | "document"
+    kind: str  # "keyword" | "document" | "theory"
     parent_section_id: str | None = None
+    section_number: str | None = None
 
 
 @dataclass
 class Section:
     section_id: str
-    keyword_id: str | None  # None for non-Keyword document sections; use section_id for navigation
+    keyword_id: str | None
     name: str
-    volume: int
-    kind: str  # "keyword" | "document"
+    volume: int | None
+    kind: str  # "keyword" | "document" | "theory"
     parent_section_id: str | None
     pdf_pages: list[int]
     manual_pages: list[str | None]
+    document_id: str | None = None
+    section_number: str | None = None
 
 
 @dataclass
 class InspectionIssue:
-    volume: int
+    volume: int | None
     pdf_page: int | None
     manual_page: str | None
     keyword_id: str | None
     severity: str
     code: str
     message: str
+    document_id: str | None = None
+    manual_type: str | None = None
 
     def to_dict(self) -> dict:
         return {
+            "document_id": self.document_id,
+            "manual_type": self.manual_type,
             "volume": self.volume,
             "pdf_page": self.pdf_page,
             "manual_page": self.manual_page,
@@ -99,7 +108,10 @@ class InspectionIssue:
 
 @dataclass
 class InspectionResult:
-    volume: int
+    volume: int | None
+    document_id: str | None = None
+    manual_type: str = MANUAL_TYPE_KEYWORD
+    release: str | None = None
     pagemap: list[PageMapEntry] = field(default_factory=list)
     sections: list[Section] = field(default_factory=list)
     toc_index: list[TOCEntry] = field(default_factory=list)
@@ -161,6 +173,24 @@ def _lines_have_title(
     if spec.kind == "keyword":
         pattern = _title_line_re(spec.name, allow_family_token=spec.indent > 0)
         return any(pattern.match(_normalize_title_line(line)) for line in lines)
+
+    if spec.kind == "theory":
+        normalized_lines = [_normalize_title_line(line) for line in lines]
+        title = _normalize_title_line(spec.name)
+        number = spec.section_number or spec.section_id
+
+        def compact(value: str) -> str:
+            return re.sub(r"-\s+", "-", value)
+
+        for index, line in enumerate(normalized_lines):
+            if not (line == number or line.startswith(f"{number} ")):
+                continue
+            for end in range(index + 1, min(index + 5, len(normalized_lines) + 1)):
+                candidate = compact(" ".join(normalized_lines[index:end]))
+                expected = f"{number} {title}"
+                if candidate == expected or candidate.startswith(expected + " "):
+                    return True
+        return False
 
     # Document sections may be titled with their full TOC name or, for
     # appendix-style names, with the leading "APPENDIX X" token. A few
@@ -310,6 +340,38 @@ def _select_section_specs(toc_index: list[TOCEntry]) -> list[SectionSpec]:
     return specs
 
 
+def _select_theory_section_specs(toc_index: list[TOCEntry]) -> list[SectionSpec]:
+    """Select numbered Theory chapters and preserve their hierarchy."""
+    specs: list[SectionSpec] = []
+    seen: set[str] = set()
+    available_numbers: set[str] = set()
+
+    for entry in toc_index:
+        match = THEORY_TOC_ENTRY_RE.match(_normalize_title_line(entry.name))
+        if match is None:
+            continue
+        number = match.group("number")
+        title = match.group("title").strip()
+        if number in seen:
+            continue
+        parent_number = number.rsplit(".", 1)[0] if "." in number else None
+        parent_id = parent_number if parent_number in available_numbers else None
+        specs.append(
+            SectionSpec(
+                section_id=number,
+                section_number=number,
+                name=title,
+                manual_page=entry.manual_page,
+                indent=entry.indent,
+                kind="theory",
+                parent_section_id=parent_id,
+            )
+        )
+        seen.add(number)
+        available_numbers.add(number)
+    return specs
+
+
 def _scan_footers(pages: list[str]) -> tuple[dict[int, tuple[str, str]], set[int]]:
     """Return {pdf_page: (manual_page, tag)} and the set of TOC pages.
 
@@ -329,13 +391,14 @@ def _scan_footers(pages: list[str]) -> tuple[dict[int, tuple[str, str]], set[int
                 match = FOOTER_RE.search(lines[-2])
         if match is not None:
             chapter, page_number, tag = int(match.group(1)), int(match.group(2)), match.group(3).strip()
-            # chapters extend past 50 for Volume I appendices (A-W); the
-            # bound only rejects numbers matched inside body text
-            if chapter > 200 or page_number > 3000 or not tag.isupper():
+            # The final-line position and numeric bounds are the primary
+            # safeguards. Keyword tags are uppercase while Theory tags use
+            # title case, so tag casing must not be part of validity.
+            if chapter > 200 or page_number > 3000 or not tag or len(tag) > 200:
                 continue
             manual_page = f"{match.group(1)}-{match.group(2)}"
             footer_map[pdf_page] = (manual_page, tag)
-            if tag == "TABLE OF CONTENTS":
+            if tag.casefold() == "table of contents":
                 toc_pages.add(pdf_page)
     return footer_map, toc_pages
 
@@ -393,7 +456,7 @@ def _locate_entry_starts(
     toc_pages: set[int],
     footer_map: dict[int, tuple[str, str]],
     issues: list[InspectionIssue],
-    volume: int,
+    volume: int | None,
 ) -> dict[str, int]:
     """Locate the start page of each SectionMap candidate.
 
@@ -532,7 +595,7 @@ def _build_pagemap(
     footer_map: dict[int, tuple[str, str]],
     specs: list[SectionSpec],
     starts: dict[str, int],
-    volume: int,
+    volume: int | None,
     issues: list[InspectionIssue],
 ) -> list[PageMapEntry]:
     """Combine footer evidence and TOC+title anchors, then interpolate
@@ -640,7 +703,8 @@ def _build_sections(
     starts: dict[str, int],
     pagemap: list[PageMapEntry],
     content_end: int,
-    volume: int,
+    volume: int | None,
+    document_id: str | None = None,
 ) -> list[Section]:
     """Build SectionMap entries with candidate page ranges.
 
@@ -683,42 +747,128 @@ def _build_sections(
                 parent_section_id=spec.parent_section_id,
                 pdf_pages=pdf_pages,
                 manual_pages=[manual_by_pdf.get(p) for p in pdf_pages],
+                document_id=document_id,
+                section_number=spec.section_number,
             )
         )
     return sections
 
 
-def inspect_volume(volume: int, pdf_path: Path, extractor: TextExtractor) -> InspectionResult:
-    """Run deterministic inspection for one Manual volume."""
+def inspect_document(
+    document: ManualDocument,
+    extractor: TextExtractor,
+) -> InspectionResult:
+    """Run deterministic inspection using the profile for one document."""
+    return _inspect(
+        volume=document.volume,
+        document_id=document.document_id,
+        manual_type=document.manual_type,
+        release=document.release,
+        pdf_path=document.path,
+        extractor=extractor,
+    )
+
+
+def _inspect(
+    *,
+    volume: int | None,
+    document_id: str,
+    manual_type: str,
+    release: str | None,
+    pdf_path: Path,
+    extractor: TextExtractor,
+) -> InspectionResult:
     pages = extractor.extract_pages(pdf_path)
-    result = InspectionResult(volume=volume)
+    result = InspectionResult(
+        volume=volume,
+        document_id=document_id,
+        manual_type=manual_type,
+        release=release,
+    )
 
     footer_map, toc_pages = _scan_footers(pages)
     result.toc_index = _parse_toc(pages, toc_pages)
-    result.legacy_alias_map = _scan_legacy_alias_map(pages)
+    result.legacy_alias_map = (
+        _scan_legacy_alias_map(pages)
+        if manual_type == MANUAL_TYPE_KEYWORD
+        else {}
+    )
 
-    section_specs = _select_section_specs(result.toc_index)
+    if not result.toc_index:
+        result.issues.append(
+            InspectionIssue(
+                volume=volume,
+                pdf_page=None,
+                manual_page=None,
+                keyword_id=None,
+                severity="error",
+                code="TOC_EMPTY",
+                message="no table-of-contents entries were parsed",
+            )
+        )
+
+    section_specs = (
+        _select_section_specs(result.toc_index)
+        if manual_type == MANUAL_TYPE_KEYWORD
+        else _select_theory_section_specs(result.toc_index)
+    )
+    if not section_specs:
+        result.issues.append(
+            InspectionIssue(
+                volume=volume,
+                pdf_page=None,
+                manual_page=None,
+                keyword_id=None,
+                severity="error",
+                code="SECTION_SPECS_EMPTY",
+                message="no SectionMap candidates were selected from the TOC",
+            )
+        )
+
     starts = _locate_entry_starts(
         pages, section_specs, toc_pages, footer_map, result.issues, volume
     )
-
     result.pagemap = _build_pagemap(
         len(pages), footer_map, section_specs, starts, volume, result.issues
     )
 
-    header_token_re = re.compile(r"^\*[A-Za-z]")
-    content_end = 1
-    for index, page_text in enumerate(pages):
-        lines = _page_lines(page_text)
-        if lines and header_token_re.match(lines[0]):
-            content_end = index + 1
+    if manual_type == MANUAL_TYPE_KEYWORD:
+        header_token_re = re.compile(r"^\*[A-Za-z]")
+        content_end = 1
+        for index, page_text in enumerate(pages):
+            lines = _page_lines(page_text)
+            if lines and header_token_re.match(lines[0]):
+                content_end = index + 1
+    else:
+        content_end = max(footer_map, default=1)
     content_end = max(content_end, max(starts.values(), default=1))
 
     result.sections = _build_sections(
-        section_specs, starts, result.pagemap, content_end, volume
+        section_specs,
+        starts,
+        result.pagemap,
+        content_end,
+        volume,
+        document_id,
     )
+    if not result.sections:
+        result.issues.append(
+            InspectionIssue(
+                volume=volume,
+                pdf_page=None,
+                manual_page=None,
+                keyword_id=None,
+                severity="error",
+                code="SECTIONMAP_EMPTY",
+                message="no sections were located",
+            )
+        )
 
-    filled = [e for e in result.pagemap if e.manual_page is not None]
+    for issue in result.issues:
+        issue.document_id = document_id
+        issue.manual_type = manual_type
+
+    filled = [entry for entry in result.pagemap if entry.manual_page is not None]
     evidence_counts: dict[str, int] = {}
     for entry in filled:
         evidence_counts[entry.evidence or "unknown"] = (
@@ -728,64 +878,100 @@ def inspect_volume(volume: int, pdf_path: Path, extractor: TextExtractor) -> Ins
         "pdf_pages": len(pages),
         "footer_pages": len(footer_map),
         "toc_entries_total": len(result.toc_index),
-        "toc_keyword_entries": sum(1 for e in section_specs if e.kind == "keyword"),
-        "toc_document_entries": sum(1 for e in section_specs if e.kind == "document"),
+        "toc_keyword_entries": sum(1 for spec in section_specs if spec.kind == "keyword"),
+        "toc_theory_entries": sum(1 for spec in section_specs if spec.kind == "theory"),
+        "toc_document_entries": sum(1 for spec in section_specs if spec.kind == "document"),
         "sections_located": len(result.sections),
-        "sections_keyword": sum(1 for s in result.sections if s.kind == "keyword"),
-        "sections_document": sum(1 for s in result.sections if s.kind == "document"),
+        "sections_keyword": sum(1 for section in result.sections if section.kind == "keyword"),
+        "sections_theory": sum(1 for section in result.sections if section.kind == "theory"),
+        "sections_document": sum(1 for section in result.sections if section.kind == "document"),
         "sections_unresolved": len(section_specs) - len(starts),
         "pagemap_filled": len(filled),
         "pagemap_none": len(pages) - len(filled),
+        "pagemap_coverage": len(filled) / len(pages) if pages else 0.0,
         "evidence": evidence_counts,
         "legacy_aliases": len(result.legacy_alias_map),
         "issues_by_code": {
-            code: sum(1 for i in result.issues if i.code == code)
-            for code in sorted({i.code for i in result.issues})
+            code: sum(1 for issue in result.issues if issue.code == code)
+            for code in sorted({issue.code for issue in result.issues})
         },
     }
     return result
 
 
+def _document_metadata(result: InspectionResult) -> dict:
+    return {
+        "document_id": result.document_id,
+        "manual_type": result.manual_type,
+        "release": result.release,
+        "volume": result.volume,
+    }
+
+
 def write_inspection_artifacts(
     results: list[InspectionResult], output_dir: Path
 ) -> Path:
-    """Write intermediate navigation artifacts; returns the output dir."""
+    """Write versioned PageMap/SectionMap v0.1 intermediate artifacts."""
     output_dir.mkdir(parents=True, exist_ok=True)
     for result in results:
-        volume_dir = output_dir / f"volume-{result.volume}"
-        volume_dir.mkdir(parents=True, exist_ok=True)
-        (volume_dir / "pagemap.json").write_text(
+        document_id = result.document_id or f"keyword-volume-{result.volume}"
+        document_dir = output_dir / document_id
+        document_dir.mkdir(parents=True, exist_ok=True)
+        document = _document_metadata(result)
+
+        (document_dir / "pagemap.json").write_text(
             json.dumps(
-                [e.__dict__ for e in result.pagemap], indent=1, ensure_ascii=False
+                {
+                    "schema_version": "0.1",
+                    "document": document,
+                    "pages": [entry.__dict__ for entry in result.pagemap],
+                },
+                indent=1,
+                ensure_ascii=False,
             ),
             encoding="utf-8",
         )
-        (volume_dir / "sectionmap.json").write_text(
+        (document_dir / "sectionmap.json").write_text(
             json.dumps(
-                [s.__dict__ for s in result.sections], indent=1, ensure_ascii=False
+                {
+                    "schema_version": "0.1",
+                    "document": document,
+                    "sections": [section.__dict__ for section in result.sections],
+                },
+                indent=1,
+                ensure_ascii=False,
             ),
             encoding="utf-8",
         )
-        (volume_dir / "toc_index.json").write_text(
+        (document_dir / "toc_index.json").write_text(
             json.dumps(
-                [e.__dict__ for e in result.toc_index], indent=1, ensure_ascii=False
+                {
+                    "schema_version": "0.1",
+                    "document": document,
+                    "entries": [entry.__dict__ for entry in result.toc_index],
+                },
+                indent=1,
+                ensure_ascii=False,
             ),
             encoding="utf-8",
         )
-        (volume_dir / "legacy_alias_map.json").write_text(
+        (document_dir / "legacy_alias_map.json").write_text(
             json.dumps(result.legacy_alias_map, indent=1, ensure_ascii=False),
             encoding="utf-8",
         )
-        (volume_dir / "issues.jsonl").write_text(
+        (document_dir / "issues.jsonl").write_text(
             "".join(
                 json.dumps(issue.to_dict(), ensure_ascii=False) + "\n"
                 for issue in result.issues
             ),
             encoding="utf-8",
         )
+
     summary = {
-        "volumes": {
-            result.volume: result.stats for result in results
+        "schema_version": "0.1",
+        "documents": {
+            result.document_id or f"keyword-volume-{result.volume}": result.stats
+            for result in results
         },
         "issues": [issue.to_dict() for result in results for issue in result.issues],
     }

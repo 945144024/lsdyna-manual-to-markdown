@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +29,7 @@ DEFAULT_MAX_RETRIES = 2
 class PaddleOCRVLRemoteConfig:
     job_url: str = DEFAULT_JOB_URL
     model: str = DEFAULT_MODEL
-    api_key_env: str = "PADDLEOCR_API_KEY"
+    api_key: str | None = field(default=None, repr=False)
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     max_retries: int = DEFAULT_MAX_RETRIES
@@ -40,11 +39,14 @@ class PaddleOCRVLRemoteConfig:
 class PaddleOCRVLRemoteProvider(DocumentProvider):
     def __init__(self, config: PaddleOCRVLRemoteConfig | None = None) -> None:
         self.config = config or PaddleOCRVLRemoteConfig()
-        self._api_key = os.environ.get(self.config.api_key_env)
+        self._api_key = self.config.api_key
         if not self._api_key:
             raise ProviderError(
-                f"environment variable {self.config.api_key_env} is not set"
+                "PaddleOCR API key is missing; set parser.api_key in the local config"
             )
+
+    def _redact(self, value: object) -> str:
+        return str(value).replace(self._api_key, "<redacted>")
 
     @property
     def provider_name(self) -> str:
@@ -72,7 +74,7 @@ class PaddleOCRVLRemoteProvider(DocumentProvider):
                 last_error = exc
                 if attempt < self.config.max_retries:
                     time.sleep(min(2**attempt, 10))
-        raise ProviderError(f"request failed after retries: {last_error}") from last_error
+        raise ProviderError(f"request failed after retries: {self._redact(last_error)}") from last_error
 
     def _get_with_retry(
         self, url: str, *, timeout: int, headers: dict[str, str] | None = None
@@ -86,7 +88,7 @@ class PaddleOCRVLRemoteProvider(DocumentProvider):
                 last_error = exc
                 if attempt < self.config.max_retries:
                     time.sleep(min(2**attempt, 10))
-        raise ProviderError(f"request failed after retries: {last_error}") from last_error
+        raise ProviderError(f"request failed after retries: {self._redact(last_error)}") from last_error
 
     def submit_pdf(self, pdf_path: Path) -> str:
         if not pdf_path.is_file():
@@ -106,7 +108,7 @@ class PaddleOCRVLRemoteProvider(DocumentProvider):
         if response.status_code != 200:
             raise ProviderError(
                 f"job submission failed with HTTP {response.status_code}: "
-                f"{response.text[:500]}"
+                f"{self._redact(response.text[:500])}"
             )
         try:
             return str(response.json()["data"]["jobId"])
@@ -122,7 +124,7 @@ class PaddleOCRVLRemoteProvider(DocumentProvider):
         if response.status_code != 200:
             raise ProviderError(
                 f"job status request failed with HTTP {response.status_code}: "
-                f"{response.text[:500]}"
+                f"{self._redact(response.text[:500])}"
             )
         try:
             return response.json()["data"]
@@ -138,7 +140,7 @@ class PaddleOCRVLRemoteProvider(DocumentProvider):
                 return data
             if state == "failed":
                 raise ProviderError(
-                    f"job {job_id} failed: {data.get('errorMsg', 'unknown error')}"
+                    f"job {job_id} failed: {self._redact(data.get('errorMsg', 'unknown error'))}"
                 )
             if state not in {"pending", "running"}:
                 raise ProviderError(f"job {job_id} entered unknown state: {state!r}")
@@ -155,10 +157,11 @@ class PaddleOCRVLRemoteProvider(DocumentProvider):
         self,
         input_pdf_path: Path,
         *,
-        volume: int,
+        document_id: str,
         pdf_pages: list[int],
+        volume: int | None = None,
     ) -> ProviderJobResult:
-        del volume, pdf_pages  # Provider does not interpret page semantics.
+        del document_id, volume, pdf_pages  # Transport ignores document semantics.
         job_id = self.submit_pdf(input_pdf_path)
         job_data = self.wait_for_job(job_id)
         result_url = job_data.get("resultUrl", {}).get("jsonUrl")

@@ -1,9 +1,4 @@
-"""Provider raw artifact storage.
-
-Raw JSONL / Markdown are saved verbatim as debugging and provenance
-material. They are not the stable interface consumed by downstream code;
-that role belongs to Canonical PageIR.
-"""
+"""Provider raw artifact storage."""
 
 from __future__ import annotations
 
@@ -18,12 +13,13 @@ from lsdyna_manual.providers.base import ProviderJobResult
 
 @dataclass(frozen=True)
 class PageRawArtifact:
-    volume: int
+    volume: int | None
     pdf_page: int
     json_path: Path
     markdown_path: Path
     source_line_index: int
     source_layout_index: int
+    document_id: str
 
 
 @dataclass(frozen=True)
@@ -38,7 +34,7 @@ class StoredRawBundle:
 def _layout_results_from_jsonl(
     raw_text: str,
 ) -> list[tuple[int, int, dict[str, Any]]]:
-    """Return ``(line_index, layout_index, layout_result)`` tuples."""
+    """Return (line_index, layout_index, layout_result) tuples."""
     results: list[tuple[int, int, dict[str, Any]]] = []
     for line_index, line in enumerate(raw_text.strip().splitlines()):
         if not line.strip():
@@ -56,16 +52,13 @@ def store_paddle_bundle(
     job_result: ProviderJobResult,
     *,
     root: Path,
-    volume: int,
     pdf_pages: list[int],
     batch_id: int,
     input_pdf_path: Path,
+    document_id: str,
+    volume: int | None,
 ) -> StoredRawBundle:
-    """Persist a Paddle remote job as a batch plus page-level raw artifacts.
-
-    ``pdf_pages`` must be the exact ordered source pages used to build the
-    transport PDF. Layout results are assigned to those pages in order.
-    """
+    """Persist a Paddle job as a batch plus page-level raw artifacts."""
     if not pdf_pages:
         raise ValueError("pdf_pages must not be empty")
     if job_result.raw_jsonl_text is None:
@@ -80,6 +73,7 @@ def store_paddle_bundle(
 
     batch_dir = (
         root
+        / document_id
         / job_result.provider
         / job_result.model
         / "batches"
@@ -95,14 +89,13 @@ def store_paddle_bundle(
 
     job_data = dict(job_result.metadata.get("job_data", {}))
     if "resultUrl" in job_data:
-        # Signed result URLs are short-lived credentials and must not be
-        # persisted with the raw artifact.
         job_data["resultUrl"] = "<redacted>"
     metadata = {
         "provider": job_result.provider,
         "model": job_result.model,
         "job_id": job_result.job_id,
         "state": job_result.state,
+        "document_id": document_id,
         "volume": volume,
         "pdf_pages": list(pdf_pages),
         "job_data": job_data,
@@ -119,8 +112,9 @@ def store_paddle_bundle(
         zip(pdf_pages, layout_results, strict=True)
     ):
         source_line_index, source_layout_index, layout_result = layout_origin
-        page_stem = f"volume-{volume}_page_{pdf_page:06d}"
+        page_stem = f"{document_id}_page_{pdf_page:06d}"
         page_record = {
+            "document_id": document_id,
             "volume": volume,
             "pdf_page": pdf_page,
             "provider": job_result.provider,
@@ -146,6 +140,7 @@ def store_paddle_bundle(
 
         page_artifacts.append(
             PageRawArtifact(
+                document_id=document_id,
                 volume=volume,
                 pdf_page=pdf_page,
                 json_path=json_path,
@@ -157,6 +152,7 @@ def store_paddle_bundle(
         page_map.append(
             {
                 "layout_index": index,
+                "document_id": document_id,
                 "volume": volume,
                 "pdf_page": pdf_page,
                 "json_path": str(json_path.relative_to(root)),

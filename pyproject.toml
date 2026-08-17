@@ -36,6 +36,7 @@ dev = [
 
 [project.scripts]
 lsdyna-manual = "lsdyna_manual.cli.main:main"
+lsdyna-manual-regression = "lsdyna_manual.regression:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

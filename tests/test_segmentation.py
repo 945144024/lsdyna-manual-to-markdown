@@ -5,16 +5,31 @@ used (see tests/synthetic/README.md).
 """
 
 import json
+from pathlib import Path
+
+from lsdyna_manual.documents import ManualDocument
 
 from lsdyna_manual.parser.segmentation import (
     _parse_toc,
     _scan_footers,
     _scan_legacy_alias_map,
     _title_line_re,
-    inspect_volume,
+    inspect_document,
     write_inspection_artifacts,
 )
 from lsdyna_manual.parser.text_extractor import TextExtractor
+
+def inspect_keyword(volume, pdf_path, extractor):
+    return inspect_document(
+        ManualDocument(
+            document_id=f"keyword-volume-{volume}",
+            manual_type="keyword",
+            volume=volume,
+            release="R17",
+            path=Path(pdf_path),
+        ),
+        extractor,
+    )
 
 
 class FakeExtractor(TextExtractor):
@@ -133,7 +148,7 @@ def _synthetic_volume_pages():
 
 
 def test_inspect_volume_navigation():
-    result = inspect_volume(2, "synthetic.pdf", FakeExtractor(_synthetic_volume_pages()))
+    result = inspect_keyword(2, "synthetic.pdf", FakeExtractor(_synthetic_volume_pages()))
 
     by_page = {entry.pdf_page: entry for entry in result.pagemap}
     assert by_page[2].manual_page == "2-1" and by_page[2].evidence == "footer"
@@ -210,7 +225,7 @@ def _nested_document_pages():
 
 
 def test_nested_document_subsections_are_selected():
-    result = inspect_volume(2, "synthetic.pdf", FakeExtractor(_nested_document_pages()))
+    result = inspect_keyword(2, "synthetic.pdf", FakeExtractor(_nested_document_pages()))
 
     sections = {section.section_id: section for section in result.sections}
 
@@ -262,7 +277,7 @@ def test_duplicate_printed_page_numbers_choose_next_candidate():
         "second body\n"
         "2-1 (MAT)",
     ]
-    result = inspect_volume(2, "synthetic.pdf", FakeExtractor(pages))
+    result = inspect_keyword(2, "synthetic.pdf", FakeExtractor(pages))
     sections = {section.section_id: section for section in result.sections}
     assert sections["MAT_FIRST"].pdf_pages == [2, 3, 4]
     assert sections["MAT_SECOND"].pdf_pages == [4]
@@ -290,7 +305,7 @@ def test_toc_page_error_falls_back_to_title_evidence():
         "other body\n"
         "2-3 (MAT)",
     ]
-    result = inspect_volume(2, "synthetic.pdf", FakeExtractor(pages))
+    result = inspect_keyword(2, "synthetic.pdf", FakeExtractor(pages))
     sections = {section.section_id: section for section in result.sections}
     assert sections["MAT_OTHER"].pdf_pages == [4]
     assert sections["MAT_EXAMPLE"].pdf_pages == [2, 3, 4]
@@ -330,7 +345,7 @@ def test_overview_list_mention_is_not_entry_start():
         "*MAT_OTHER\n"
         "more other body",
     ]
-    result = inspect_volume(2, "synthetic.pdf", FakeExtractor(pages))
+    result = inspect_keyword(2, "synthetic.pdf", FakeExtractor(pages))
     sections = {section.section_id: section for section in result.sections}
     assert sections["MAT_OTHER"].pdf_pages[0] == 4
     assert result.stats["sections_unresolved"] == 0
@@ -341,7 +356,7 @@ def test_unresolved_entry_produces_issue(tmp_path):
     pages = _synthetic_volume_pages()
     # rename the *MAT_OTHER body title so the TOC entry cannot be located
     pages[5] = pages[5].replace("*MAT_OTHER", "*MAT_RENAMED")
-    result = inspect_volume(2, "synthetic.pdf", FakeExtractor(pages))
+    result = inspect_keyword(2, "synthetic.pdf", FakeExtractor(pages))
     assert all(section.name != "*MAT_OTHER" for section in result.sections)
     assert any(
         issue.code == "TOC_ENTRY_UNRESOLVED" and issue.keyword_id == "MAT_OTHER"
@@ -350,14 +365,79 @@ def test_unresolved_entry_produces_issue(tmp_path):
 
 
 def test_write_artifacts(tmp_path):
-    result = inspect_volume(2, "synthetic.pdf", FakeExtractor(_synthetic_volume_pages()))
+    result = inspect_keyword(2, "synthetic.pdf", FakeExtractor(_synthetic_volume_pages()))
     out = write_inspection_artifacts([result], tmp_path)
-    volume_dir = out / "volume-2"
-    pagemap = json.loads((volume_dir / "pagemap.json").read_text())
-    assert pagemap[1] == {"pdf_page": 2, "manual_page": "2-1", "evidence": "footer"}
-    sections = json.loads((volume_dir / "sectionmap.json").read_text())
+    document_dir = out / "keyword-volume-2"
+    pagemap = json.loads((document_dir / "pagemap.json").read_text())
+    assert pagemap["schema_version"] == "0.1"
+    assert pagemap["document"]["document_id"] == "keyword-volume-2"
+    assert pagemap["pages"][1] == {
+        "pdf_page": 2,
+        "manual_page": "2-1",
+        "evidence": "footer",
+    }
+    sectionmap = json.loads((document_dir / "sectionmap.json").read_text())
+    sections = sectionmap["sections"]
     assert sections[0]["keyword_id"] == "MAT_EXAMPLE"
     assert sections[0]["section_id"] == "MAT_EXAMPLE"
     assert sections[0]["kind"] == "keyword"
     summary = json.loads((out / "inspection_summary.json").read_text())
-    assert summary["volumes"]["2"]["pdf_pages"] == 7
+    assert summary["documents"]["keyword-volume-2"]["pdf_pages"] == 7
+
+def _synthetic_theory_pages():
+    return [
+        "LS-DYNA Theory Manual\n"
+        "Table of Contents\n"
+        "1 Abstract .............................. 1-1\n"
+        "2 Solid Elements ....................... 2-1\n"
+        "  2.1 Formulation ...................... 2-2\n"
+        "0-1 (Table of Contents)",
+        "LS-DYNA Theory Manual\n"
+        "1\n"
+        "Abstract\n"
+        "abstract body\n"
+        "1-1 (Abstract)",
+        "LS-DYNA Theory Manual\n"
+        "2\n"
+        "Solid Elements\n"
+        "chapter body\n"
+        "2-1 (Solid Elements)",
+        "Solid Elements\n"
+        "2.1 Formulation\n"
+        "formulation body\n"
+        "2-2 (Solid Elements)",
+    ]
+
+
+def test_theory_profile_builds_hierarchical_sections():
+    from pathlib import Path
+
+    from lsdyna_manual.documents import ManualDocument
+    from lsdyna_manual.parser.segmentation import inspect_document
+
+    document = ManualDocument(
+        document_id="theory",
+        manual_type="theory",
+        release="R17",
+        path=Path("theory.pdf"),
+    )
+    result = inspect_document(document, FakeExtractor(_synthetic_theory_pages()))
+
+    assert result.stats["pagemap_filled"] == 4
+    assert result.stats["sections_theory"] == 3
+    assert result.stats["sections_unresolved"] == 0
+    assert result.stats["issues_by_code"] == {}
+
+    sections = {section.section_id: section for section in result.sections}
+    assert sections["1"].name == "Abstract"
+    assert sections["2"].pdf_pages == [3, 4]
+    assert sections["2.1"].parent_section_id == "2"
+    assert sections["2.1"].section_number == "2.1"
+
+
+def test_empty_inspection_is_an_error():
+    result = inspect_keyword(1, "empty.pdf", FakeExtractor(["cover only"]))
+    assert result.stats["sections_located"] == 0
+    assert {"TOC_EMPTY", "SECTION_SPECS_EMPTY", "SECTIONMAP_EMPTY"} <= set(
+        result.stats["issues_by_code"]
+    )

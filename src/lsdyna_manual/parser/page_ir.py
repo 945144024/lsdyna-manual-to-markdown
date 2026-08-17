@@ -133,10 +133,12 @@ class PageIR:
     manual_page: str | None
     blocks: list[Block] = field(default_factory=list)
     issues: list[ParseIssue] = field(default_factory=list)
+    document_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
+            "document_id": self.document_id,
             "pdf_page": self.pdf_page,
             "manual_page": self.manual_page,
             "blocks": [block.to_dict() for block in self.blocks],
@@ -146,6 +148,7 @@ class PageIR:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PageIR":
         return PageIR(
+            document_id=data.get("document_id"),
             pdf_page=int(data["pdf_page"]),
             manual_page=data.get("manual_page"),
             blocks=[block_from_dict(block) for block in data.get("blocks", [])],
@@ -209,7 +212,10 @@ def _bbox_error(block: Block) -> list[ParseIssue]:
 
 
 def validate_page_ir(
-    page_ir: PageIR, *, expected_pdf_page: int | None = None
+    page_ir: PageIR,
+    *,
+    expected_document_id: str | None = None,
+    expected_pdf_page: int | None = None,
 ) -> list[ParseIssue]:
     """Validate PageIR shape without adding new schema fields.
 
@@ -218,6 +224,18 @@ def validate_page_ir(
     schema itself must change.
     """
     issues: list[ParseIssue] = []
+
+    if expected_document_id is not None and page_ir.document_id != expected_document_id:
+        issues.append(
+            ParseIssue(
+                severity="error",
+                code="PAGEIR_DOCUMENT_IDENTITY_MISMATCH",
+                message=(
+                    f"PageIR reports document_id {page_ir.document_id!r}, "
+                    f"expected {expected_document_id!r}"
+                ),
+            )
+        )
 
     if page_ir.pdf_page <= 0:
         issues.append(

@@ -63,7 +63,18 @@ def test_block_from_dict_rejects_unknown_type():
 def test_validate_page_ir_identity_and_shape():
     page_ir = _page_ir()
 
-    assert validate_page_ir(page_ir, expected_pdf_page=197) == []
+    page_ir.document_id = "theory"
+    assert validate_page_ir(
+        page_ir, expected_document_id="theory", expected_pdf_page=197
+    ) == []
+
+    document_issues = validate_page_ir(
+        page_ir, expected_document_id="keyword-volume-1"
+    )
+    assert any(
+        issue.code == "PAGEIR_DOCUMENT_IDENTITY_MISMATCH"
+        for issue in document_issues
+    )
 
     identity_issues = validate_page_ir(page_ir, expected_pdf_page=198)
     assert any(issue.code == "PAGEIR_PAGE_IDENTITY_MISMATCH" for issue in identity_issues)

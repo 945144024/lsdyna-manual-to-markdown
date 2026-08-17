@@ -1,9 +1,4 @@
-"""Checkpoint / cache for page parsing runs.
-
-State is keyed by the semantic page identity ``(volume, pdf_page)`` and
-includes provider/model so changing the parsing backend invalidates old
-cache entries.
-"""
+"""Checkpoint and cache for page parsing runs."""
 
 from __future__ import annotations
 
@@ -14,10 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 @dataclass
 class PageParseState:
-    volume: int
+    document_id: str
+    volume: int | None
     pdf_page: int
     status: str
     provider: str | None = None
@@ -36,12 +31,13 @@ class PageParseState:
     updated_at: str | None = None
 
     @staticmethod
-    def key(volume: int, pdf_page: int) -> str:
-        return f"{volume}:{pdf_page}"
+    def key(document_id: str, pdf_page: int) -> str:
+        return f"{document_id}:{pdf_page}"
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "key": self.key(self.volume, self.pdf_page),
+            "key": self.key(self.document_id, self.pdf_page),
+            "document_id": self.document_id,
             "volume": self.volume,
             "pdf_page": self.pdf_page,
             "status": self.status,
@@ -63,8 +59,11 @@ class PageParseState:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PageParseState":
+        volume_value = data.get("volume")
+        volume = int(volume_value) if volume_value is not None else None
         return cls(
-            volume=int(data["volume"]),
+            document_id=str(data["document_id"]),
+            volume=volume,
             pdf_page=int(data["pdf_page"]),
             status=str(data["status"]),
             provider=data.get("provider"),
@@ -102,19 +101,21 @@ class ParseStateStore:
             raw = json.loads(path.read_text(encoding="utf-8"))
             for item in raw.get("pages", []):
                 state = PageParseState.from_dict(item)
-                self._states[state.key(state.volume, state.pdf_page)] = state
+                self._states[state.key(state.document_id, state.pdf_page)] = state
 
-    def get(self, volume: int, pdf_page: int) -> PageParseState | None:
-        return self._states.get(PageParseState.key(volume, pdf_page))
+    def get(
+        self, document_id: str, pdf_page: int
+    ) -> PageParseState | None:
+        return self._states.get(PageParseState.key(document_id, pdf_page))
 
     def set(self, state: PageParseState) -> None:
         state.updated_at = utc_now_iso()
-        self._states[state.key(state.volume, state.pdf_page)] = state
+        self._states[state.key(state.document_id, state.pdf_page)] = state
         self.save()
 
     def is_raw_done(
         self,
-        volume: int,
+        document_id: str,
         pdf_page: int,
         *,
         provider: str,
@@ -122,7 +123,7 @@ class ParseStateStore:
         source_sha256: str,
         semantic_config_hash: str,
     ) -> bool:
-        state = self.get(volume, pdf_page)
+        state = self.get(document_id, pdf_page)
         return bool(
             state is not None
             and state.status == "raw_done"
@@ -134,7 +135,7 @@ class ParseStateStore:
 
     def is_done(
         self,
-        volume: int,
+        document_id: str,
         pdf_page: int,
         *,
         provider: str,
@@ -144,7 +145,7 @@ class ParseStateStore:
         adapter_identity: str,
         pageir_schema_version: str,
     ) -> bool:
-        state = self.get(volume, pdf_page)
+        state = self.get(document_id, pdf_page)
         return bool(
             state is not None
             and state.status == "done"

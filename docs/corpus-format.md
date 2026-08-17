@@ -1,10 +1,10 @@
-# Corpus Format Specification v0.1
+# Corpus 格式规范
 
 本文档定义 `lsdyna-manual-builder` 生成的 Manual Corpus 的目录结构与数据格式，是 `manifest` 模块与输出校验的实现依据。
 
 ## 1. 目标与范围
 
-用户提供合法获得的指定版本 LS-DYNA Keyword Manual，并配置自己的解析 API。本项目将 Manual 在本地转换为结构稳定、来源可追溯、适合 LLM 读取的 Markdown Corpus。
+用户提供合法获得的指定版本 LS-DYNA Keyword Manual 和/或 Theory Manual，并配置自己的解析 API。项目在本地转换为结构稳定、来源可追溯、适合 LLM 读取的 Markdown Corpus。
 
 本文档定义目标 Corpus 格式。当前 v0.1 开发阶段尚未完成 Section Reconstruction 与最终 Keyword Markdown Renderer，因此本节描述的是最终可分发 Corpus 的契约，不代表当前 `build` 命令已经产生这些产物。
 
@@ -16,7 +16,7 @@ v0.1 不涉及 RAG、MCP、`.k` 文件解析、Keyword Validator、LSP、Embeddi
 
 与 Corpus 设计直接相关的 Manual 结构事实：
 
-- Manual 按 Volume 组织，Corpus 在文件系统层面保持 Volume 来源边界；
+- Keyword Manual 按 Volume 组织，Corpus 在文件系统层面保持 Volume 来源边界；Theory Manual 使用独立的 `theory` 文档身份；
 - Manual 具有自身印刷页码（章-页格式，如 `2-131`），与 PDF 页面序号是两个概念；
 - Keyword 条目可能跨页；
 - Keyword 条目包含 Card 表格、Variable Description、Remarks 等结构。
@@ -82,22 +82,30 @@ Manual 中作为一个完整参考条目出现的内容对应一个 Markdown 文
 
 ## 5. corpus.yaml
 
-记录语料库级元数据与构建信息，不保存配置文件路径、`base_url`、API Key 及任何认证信息。
+记录语料库级元数据与构建信息，不保存配置文件路径、`job_url`、API Key 或任何认证信息。
 
 ```yaml
 schema_version: "0.1"
 manual:
-  product: "LS-DYNA Keyword User's Manual"
-  release: "R13"
-  volumes:
-    - name: "Volume I"
-      source_file: "LS-DYNA_Manual_Volume_I_R13.pdf"
+  product: "LS-DYNA Manuals"
+  release: "R17"
+  documents:
+    - document_id: "keyword-volume-1"
+      manual_type: "keyword"
+      volume: 1
+      name: "Keyword Manual Volume I"
+      source_file: "LS-DYNA_Manual_Vol_I_R17.pdf"
       pdf_page_count: 3846
       sha256: "…"
-    - name: "Volume II"
-      source_file: "LS-DYNA_Manual_Volume_II_R13.pdf"
-      pdf_page_count: 1992
+      support_level: "verified"
+    - document_id: "theory"
+      manual_type: "theory"
+      volume: null
+      name: "Theory Manual"
+      source_file: "LS-DYNA_Manual_Theory_R17.pdf"
+      pdf_page_count: 882
       sha256: "…"
+      support_level: "verified"
 builder:
   version: "0.1.0-dev"
   # 记录实际构建使用的 Provider；取值取决于配置。
@@ -112,7 +120,7 @@ stats:
   status_failed: 2
 ```
 
-每个源 PDF 记录 `source_file`、`pdf_page_count` 与 `sha256`，用于来源追溯。
+每个源 PDF 记录 `document_id`、`manual_type`、可空 `volume`、`source_file`、`pdf_page_count`、`sha256` 与 `support_level`，用于来源追溯。
 
 ## 6. manifest.jsonl
 
@@ -122,6 +130,8 @@ Manifest 是 Corpus 级权威索引。每条记录只包含身份、来源、路
 
 ```json
 {
+  "document_id": "keyword-volume-2",
+  "manual_type": "keyword",
   "keyword_id": "MAT_EXAMPLE",
   "name": "*MAT_EXAMPLE",
   "family": "MAT",
@@ -157,6 +167,8 @@ Manifest 是 Corpus 级权威索引。每条记录只包含身份、来源、路
 
 ```json
 {
+  "document_id": "keyword-volume-2",
+  "manual_type": "keyword",
   "volume": 2,
   "pdf_page": 245,
   "manual_page": "2-131",
@@ -169,7 +181,7 @@ Manifest 是 Corpus 级权威索引。每条记录只包含身份、来源、路
 
 字段定义：
 
-- `volume`、`pdf_page`、`manual_page`：问题发生的位置；
+- `document_id`、`manual_type`、`volume`、`pdf_page`、`manual_page`：问题发生的位置；
 - `keyword_id`：问题归属的 Keyword。解析问题可能发生在 Keyword 边界恢复之前，无法归属时允许为 `null`；
 - `severity`：`info` / `warning` / `error` 之一；
 - `code`：离散问题标记，取值应为 `parser-interface.md` 中登记的 issue code；
@@ -179,6 +191,8 @@ Manifest 是 Corpus 级权威索引。每条记录只包含身份、来源、路
 
 ```json
 {
+  "document_id": "keyword-volume-2",
+  "manual_type": "keyword",
   "volume": 2,
   "pdf_page": 245,
   "manual_page": "2-131",

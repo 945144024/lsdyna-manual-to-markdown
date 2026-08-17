@@ -35,8 +35,9 @@ class DocumentProvider(ABC):
         self,
         input_pdf_path: Path,
         *,
-        volume: int,
+        document_id: str,
         pdf_pages: list[int],
+        volume: int | None = None,
     ) -> ProviderJobResult:
         """Submit a PDF batch and wait for the raw provider result."""
 

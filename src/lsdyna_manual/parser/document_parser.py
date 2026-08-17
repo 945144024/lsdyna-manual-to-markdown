@@ -1,10 +1,4 @@
-"""Document-level parser orchestration for the Reliable PageIR stage.
-
-This module currently performs the raw-capture phase only: it turns a
-page-centric ParsePlan into transport batches, calls a Provider, persists
-provider raw artifacts, and updates per-page checkpoint state. Adapter
-and PageIR generation are added after raw output has been inspected.
-"""
+"""Document-level parser orchestration for the Reliable PageIR stage."""
 
 from __future__ import annotations
 
@@ -22,9 +16,10 @@ from lsdyna_manual.providers.base import DocumentProvider, ProviderError
 
 @dataclass
 class ParseRunPageResult:
-    volume: int
+    document_id: str
     pdf_page: int
     status: str
+    volume: int | None = None
     raw_artifact: PageRawArtifact | None = None
     error: str | None = None
 
@@ -43,18 +38,14 @@ class DocumentParser:
         self.raw_root = raw_root
         self.pageir_root = pageir_root or (raw_root.parent / "pageir")
 
-    def parse_raw_for_volume(
+    def parse_raw_for_document(
         self,
         plan: ParsePlan,
         source_pdf_path: Path,
-        volume: int,
+        *,
+        document_id: str,
     ) -> list[ParseRunPageResult]:
-        """Capture provider raw artifacts for one volume.
-
-        Batches whose pages are already marked raw_done are skipped.
-        A failed batch marks every page in that batch as failed and then
-        continues with the next batch.
-        """
+        """Capture provider raw artifacts for one source document."""
         results: list[ParseRunPageResult] = []
         provider_name = getattr(self.provider, "provider_name", "document-provider")
         model = getattr(self.provider.config, "model", None)
@@ -67,12 +58,13 @@ class DocumentParser:
         from pypdf import PdfReader
 
         reader = PdfReader(str(source_pdf_path))
-        for batch in plan.batches_for_volume(volume):
+        for batch in plan.batches_for_document(document_id):
+            batch_volume = batch.volume
             pending_pages = [
                 pdf_page
                 for pdf_page in batch.pdf_pages
                 if not self.state_store.is_raw_done(
-                    volume,
+                    document_id,
                     pdf_page,
                     provider=provider_name,
                     model=model,
@@ -83,25 +75,30 @@ class DocumentParser:
             if not pending_pages:
                 continue
 
-            batch_input = self._make_batch_pdf(reader, pending_pages)
+            batch_input = self._make_batch_pdf(reader, pending_pages, document_id)
             try:
                 job_result = self.provider.parse_pdf_batch(
                     batch_input,
-                    volume=volume,
+                    document_id=document_id,
+                    volume=batch_volume,
                     pdf_pages=pending_pages,
                 )
                 stored = store_paddle_bundle(
                     job_result,
                     root=self.raw_root,
-                    volume=volume,
+                    document_id=document_id,
+                    volume=batch_volume,
                     pdf_pages=pending_pages,
                     batch_id=batch.batch_id,
                     input_pdf_path=batch_input,
                 )
             except (ProviderError, ValueError, KeyError) as exc:
                 for pdf_page in pending_pages:
-                    state = self.state_store.get(volume, pdf_page) or PageParseState(
-                        volume=volume,
+                    state = self.state_store.get(
+                        document_id, pdf_page
+                    ) or PageParseState(
+                        document_id=document_id,
+                        volume=batch_volume,
                         pdf_page=pdf_page,
                         status="failed",
                     )
@@ -115,7 +112,8 @@ class DocumentParser:
                     self.state_store.set(state)
                     results.append(
                         ParseRunPageResult(
-                            volume=volume,
+                            document_id=document_id,
+                            volume=batch_volume,
                             pdf_page=pdf_page,
                             status="failed",
                             error=str(exc),
@@ -125,8 +123,9 @@ class DocumentParser:
 
             for artifact in stored.page_artifacts:
                 state = self.state_store.get(
-                    artifact.volume, artifact.pdf_page
+                    artifact.document_id, artifact.pdf_page
                 ) or PageParseState(
+                    document_id=artifact.document_id,
                     volume=artifact.volume,
                     pdf_page=artifact.pdf_page,
                     status="raw_done",
@@ -145,6 +144,7 @@ class DocumentParser:
                 self.state_store.set(state)
                 results.append(
                     ParseRunPageResult(
+                        document_id=artifact.document_id,
                         volume=artifact.volume,
                         pdf_page=artifact.pdf_page,
                         status="raw_done",
@@ -154,14 +154,15 @@ class DocumentParser:
 
         return results
 
-    def build_pageir_for_volume(
+    def build_pageir_for_document(
         self,
         plan: ParsePlan,
         adapter: PageAdapter,
-        volume: int,
+        *,
+        document_id: str,
         source_pdf_path: Path,
     ) -> list[ParseRunPageResult]:
-        """Convert already captured raw page artifacts into PageIR."""
+        """Convert captured raw artifacts into document-identified PageIR."""
         if not source_pdf_path.is_file():
             raise ValueError(f"source PDF not found: {source_pdf_path}")
 
@@ -174,10 +175,11 @@ class DocumentParser:
         adapter_identity = adapter.identity()
 
         for entry in plan.entries:
-            if entry.volume != volume:
+            if entry.document_id != document_id:
                 continue
+            entry_volume = entry.volume
             if self.state_store.is_done(
-                volume,
+                document_id,
                 entry.pdf_page,
                 provider=provider_name,
                 model=model,
@@ -187,15 +189,13 @@ class DocumentParser:
                 pageir_schema_version=SCHEMA_VERSION,
             ):
                 continue
-            state = self.state_store.get(volume, entry.pdf_page)
+            state = self.state_store.get(document_id, entry.pdf_page)
             if state is None or state.status != "raw_done":
                 continue
             if (
                 state.source_sha256 != source_sha256
                 or state.semantic_config_hash != semantic_config_hash
             ):
-                # Raw cache identity no longer matches; raw capture must
-                # run again before this page can produce PageIR.
                 continue
             if not state.raw_json_path or not Path(state.raw_json_path).is_file():
                 state.status = "failed"
@@ -203,7 +203,8 @@ class DocumentParser:
                 self.state_store.set(state)
                 results.append(
                     ParseRunPageResult(
-                        volume=volume,
+                        document_id=document_id,
+                        volume=entry_volume,
                         pdf_page=entry.pdf_page,
                         status="failed",
                         error=state.error,
@@ -217,13 +218,16 @@ class DocumentParser:
                     pdf_page=entry.pdf_page,
                     manual_page=entry.manual_page,
                 )
+                page_ir.document_id = document_id
                 validation_issues = validate_page_ir(
-                    page_ir, expected_pdf_page=entry.pdf_page
+                    page_ir,
+                    expected_document_id=document_id,
+                    expected_pdf_page=entry.pdf_page,
                 )
                 page_ir.issues.extend(validation_issues)
                 pageir_path = (
                     self.pageir_root
-                    / f"volume-{volume}"
+                    / document_id
                     / f"page_{entry.pdf_page:06d}.json"
                 )
                 save_page_ir(page_ir, pageir_path)
@@ -233,7 +237,8 @@ class DocumentParser:
                 self.state_store.set(state)
                 results.append(
                     ParseRunPageResult(
-                        volume=volume,
+                        document_id=document_id,
+                        volume=entry_volume,
                         pdf_page=entry.pdf_page,
                         status="failed",
                         error=str(exc),
@@ -252,7 +257,8 @@ class DocumentParser:
             self.state_store.set(state)
             results.append(
                 ParseRunPageResult(
-                    volume=volume,
+                    document_id=document_id,
+                    volume=entry_volume,
                     pdf_page=entry.pdf_page,
                     status="done",
                 )
@@ -260,13 +266,18 @@ class DocumentParser:
 
         return results
 
-    def _make_batch_pdf(self, reader, pdf_pages: list[int]) -> Path:
+    def _make_batch_pdf(
+        self,
+        reader,
+        pdf_pages: list[int],
+        document_id: str,
+    ) -> Path:
         from pypdf import PdfWriter
 
         writer = PdfWriter()
         for pdf_page in pdf_pages:
             writer.add_page(reader.pages[pdf_page - 1])
-        transport_dir = self.raw_root / ".transport"
+        transport_dir = self.raw_root / ".transport" / document_id
         transport_dir.mkdir(parents=True, exist_ok=True)
         output = transport_dir / (
             f"batch_{pdf_pages[0]:06d}_{pdf_pages[-1]:06d}.pdf"

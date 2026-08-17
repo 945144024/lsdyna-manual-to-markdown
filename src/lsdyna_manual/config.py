@@ -1,59 +1,77 @@
-"""Configuration loading and validation for build runs."""
+"""Configuration loading and validation."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError, model_validator
 
 
 class ConfigError(Exception):
     """Raised when the configuration file is missing, malformed, or invalid."""
 
 
-class ManualConfig(BaseModel):
+class _ConfigModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ManualDocumentConfig(_ConfigModel):
+    """One explicitly configured Manual PDF.
+
+    Type and volume may be omitted when the official filename is recognizable.
+    """
+
+    path: Path
+    manual_type: Literal["keyword", "theory"] | None = None
+    volume: int | None = None
+
+    @model_validator(mode="after")
+    def _check_identity(self) -> "ManualDocumentConfig":
+        if self.manual_type == "keyword" and self.volume not in {1, 2, 3}:
+            raise ValueError("keyword documents require volume 1, 2, or 3")
+        if self.manual_type == "theory" and self.volume is not None:
+            raise ValueError("theory documents must not define volume")
+        if self.manual_type is None and self.volume is not None:
+            raise ValueError("volume requires manual_type: keyword")
+        return self
+
+
+class ManualConfig(_ConfigModel):
     release: str | None = None
     manuals_dir: Path = Path("./manuals")
-    volumes: dict[int, Path] | None = None
-    require_all_volumes: bool = True
+    documents: list[ManualDocumentConfig] | None = None
 
-    @field_validator("volumes")
-    @classmethod
-    def _check_volume_keys(cls, value: dict[int, Path] | None) -> dict[int, Path] | None:
-        if value is None:
-            return value
-        invalid = set(value) - {1, 2, 3}
-        if invalid:
-            raise ValueError(f"volume keys must be 1, 2, or 3; got {sorted(invalid)}")
-        return value
+    @model_validator(mode="after")
+    def _check_explicit_sources(self) -> "ManualConfig":
+        if self.documents == []:
+            raise ValueError("manual.documents must not be empty")
+        return self
 
 
-class ParserConfig(BaseModel):
-    provider: str = "openai-compatible"
-    model: str = "your-model-name"
-    # OpenAI-compatible endpoint base URL. Not used by paddleocr-vl-remote.
-    base_url: str | None = None
-    api_key_env: str = "PARSER_API_KEY"
-    # PaddleOCR-VL remote job endpoint. Only used by paddleocr-vl-remote.
-    job_url: str | None = None
+class ParserConfig(_ConfigModel):
+    provider: Literal["paddleocr-vl-remote"] = "paddleocr-vl-remote"
+    model: str = "PaddleOCR-VL-1.6"
+    api_key: SecretStr | None = None
+    job_url: str = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
     timeout_seconds: int = 1800
     poll_interval_seconds: int = 5
     max_retries: int = 2
     batch_size: int = 5
 
 
-class OutputConfig(BaseModel):
+class OutputConfig(_ConfigModel):
     corpus_dir: Path
 
 
-class OptionsConfig(BaseModel):
+class OptionsConfig(_ConfigModel):
     start_page: int = 1
     end_page: int | None = None
     concurrency: int = 4
 
 
-class BuildConfig(BaseModel):
+class BuildConfig(_ConfigModel):
     manual: ManualConfig
     parser: ParserConfig
     output: OutputConfig

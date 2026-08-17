@@ -14,6 +14,7 @@ def _section(section_id, volume, pages):
         parent_section_id=None,
         pdf_pages=pages,
         manual_pages=[None] * len(pages),
+        document_id=f"keyword-volume-{volume}",
     )
 
 
@@ -23,7 +24,7 @@ def test_build_parse_plan_deduplicates_overlapping_candidates():
         _section("MAT_NEXT", 2, [200, 201]),
     ]
     pagemap = {
-        2: [
+        "keyword-volume-2": [
             PageMapEntry(pdf_page=197, manual_page="2-131", evidence="footer"),
             PageMapEntry(pdf_page=198, manual_page="2-132", evidence="footer"),
             PageMapEntry(pdf_page=199, manual_page="2-133", evidence="footer"),
@@ -35,8 +36,8 @@ def test_build_parse_plan_deduplicates_overlapping_candidates():
     plan = build_parse_plan(sections, pagemap, batch_size=3)
 
     assert plan.page_count == 5
-    by_page = {(entry.volume, entry.pdf_page): entry for entry in plan.entries}
-    assert by_page[(2, 200)].candidate_sections == ("MAT_ELASTIC", "MAT_NEXT")
+    by_page = {(entry.document_id, entry.pdf_page): entry for entry in plan.entries}
+    assert by_page[("keyword-volume-2", 200)].candidate_sections == ("MAT_ELASTIC", "MAT_NEXT")
     assert len(plan.batches) == 2
     assert plan.batches[0].pdf_pages == (197, 198, 199)
     assert plan.batches[1].pdf_pages == (200, 201)
@@ -45,7 +46,7 @@ def test_build_parse_plan_deduplicates_overlapping_candidates():
 def test_build_parse_plan_splits_on_gaps_and_page_range():
     sections = [_section("A", 1, [2, 3, 10, 11])]
     pagemap = {
-        1: [
+        "keyword-volume-1": [
             PageMapEntry(pdf_page=page, manual_page=None, evidence=None)
             for page in range(1, 12)
         ]

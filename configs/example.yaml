@@ -1,39 +1,41 @@
-# Example configuration for lsdyna-manual-builder.
-# Relative paths are resolved against the working directory.
+# Copy this file to configs/local.yaml before adding credentials.
+# Relative paths are resolved against the current working directory.
 
 manual:
-  release: "R13"              # optional; cross-checked against the PDF filenames
-  manuals_dir: "./manuals"    # auto-discovery of the three Keyword Manual volumes
-  require_all_volumes: true   # fail if any of Volume I/II/III is missing
-  # volumes:                  # optional explicit paths; overrides auto-discovery
-  #   1: "manuals/LS-DYNA_Manual_Volume_I_R13.pdf"
-  #   2: "manuals/LS-DYNA_Manual_Volume_II_R13.pdf"
-  #   3: "manuals/LS-DYNA_Manual_Volume_III_R13.pdf"
+  # One run processes one release. R12-R17 are verified.
+  release: "R17"
+
+  # Auto-discover any non-empty Keyword/Theory subset for the selected release.
+  manuals_dir: "./manuals"
+
+  # Optional explicit list for non-standard filenames. When enabled, this
+  # replaces auto-discovery. Official filenames can infer type and volume.
+  # documents:
+  #   - path: "manuals/LS-DYNA_Manual_Vol_I_R17.pdf"
+  #   - path: "manuals/LS-DYNA_Manual_Theory_R17.pdf"
+  #   - path: "manuals/custom-keyword.pdf"
+  #     manual_type: "keyword"
+  #     volume: 2
 
 parser:
-  # Example 1: OpenAI-compatible endpoint.
-  provider: "openai-compatible"
-  model: "your-model-name"
-  base_url: "https://api.example.com/v1"
-  api_key_env: "PARSER_API_KEY"  # the API key is read from this environment variable
+  # The supported remote parser is the Baidu AI Studio PaddleOCR API.
+  provider: "paddleocr-vl-remote"
+  model: "PaddleOCR-VL-1.6"
+  job_url: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
 
-  # Example 2: PaddleOCR-VL remote job API.
-  # provider: "paddleocr-vl-remote"
-  # model: "PaddleOCR-VL-1.6"
-  # job_url: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
-  # api_key_env: "PADDLEOCR_API_KEY"
+  # Get a key from https://aistudio.baidu.com/paddleocr and set it only in an
+  # ignored local config. inspect and the current ingest-only build may use null.
+  api_key: null
 
-  # Optional settings for provider: "paddleocr-vl-remote".
-  # timeout_seconds: 1800
-  # poll_interval_seconds: 5
-  # max_retries: 2
-  # batch_size: 5
+  timeout_seconds: 1800
+  poll_interval_seconds: 5
+  max_retries: 2
+  batch_size: 5
 
 output:
-  # Corpus root: corpus.yaml + manifest.jsonl + markdown/ + reports/
-  corpus_dir: "./workspace/run_r13"
+  corpus_dir: "./workspace/run_r17"
 
 options:
   start_page: 1
-  end_page: null              # null means until the last page
+  end_page: null
   concurrency: 4

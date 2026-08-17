@@ -1,8 +1,8 @@
-# Markdown Style Specification v0.1
+# Markdown 格式规范
 
 本文档定义 `lsdyna-manual-builder` 生成的 Keyword Markdown 文档的组织结构与格式规则，是 `markdown` 模块 renderer 的实现依据。
 
-> 本文档描述的是目标 Corpus Markdown 格式。当前 v0.1 开发阶段尚未进入 Section Reconstruction 与最终 Markdown Renderer；Provider 返回的 raw Markdown（如 PaddleOCR-VL remote Markdown）不属于本文档定义的产品格式。实现状态见 `README.md` 与 `docs/parser-interface.md`。
+> 本文档描述的是目标 Corpus Markdown 格式。当前 v0.1 开发阶段尚未进入 Section Reconstruction 与最终 Markdown Renderer；Provider 返回的 raw Markdown（如 PaddleOCR-VL remote Markdown）不属于本文档定义的产品格式。实现状态见 `README.md` 与 `parser-interface.md`。
 
 ## 1. 基本规则
 
@@ -21,6 +21,8 @@ Front Matter 固定包含：
 
 ```yaml
 ---
+document_id: keyword-volume-2
+manual_type: keyword
 keyword_id: MAT_EXAMPLE
 name: "*MAT_EXAMPLE"
 family: MAT
@@ -43,6 +45,8 @@ Front Matter 不保存 parser model、builder version、build time、API 配置�
 
 ```markdown
 ---
+document_id: keyword-volume-2
+manual_type: keyword
 keyword_id: MAT_EXAMPLE
 name: "*MAT_EXAMPLE"
 family: MAT

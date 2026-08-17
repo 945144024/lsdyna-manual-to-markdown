@@ -1,15 +1,13 @@
-# Manuals Directory
+# Manual 文件目录
 
-本目录用于存放用户**自行提供且合法获得**的 LS-DYNA 官方 Manual PDF 文件。
+本目录用于存放用户自行取得并获准使用的 LS-DYNA 官方 Manual PDF。仓库不提供、下载或分发 Manual。
 
-程序按文件名中的 release 识别版本，并支持两类官方命名：
+支持识别的官方文件名示例：
 
 - `LS-DYNA_Manual_Volume_I_R13.pdf`
-- `LS-DYNA_Manual_Vol_I_R17.pdf`
+- `LS-DYNA_Manual_Vol_II_R17.pdf`
+- `LS-DYNA_Manual_Theory_R17.pdf`
 
-同一目录中可以同时保留多个 release；运行前通过 `manual.release` 选择目标版本。
+同一目录可以保存多个 release。运行时使用 `manual.release` 选择一个版本，并可处理该版本下任意非空 Keyword / Theory 组合。非标准文件名应通过 `manual.documents` 显式声明类型和卷号。
 
-> **重要安全约定**
-> - 本目录中的所有内容（PDF、压缩包、解压后的文档等）**一律被 `.gitignore` 排除，永远不会提交到 Git 仓库**；
-> - 本 `README.md` 是唯一会被 Git 跟踪的文件，用于保留此目录在仓库中的位置；
-> - 请勿将任何未授权分发的版权文件、机密数据或临时文件放置于此目录。
+`.gitignore` 排除本目录中的全部内容，仅保留本 README。不得提交 Manual、压缩包、解压文本、渲染页或其他版权材料。

@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lsdyna-manual-builder.invalid/schema/pagemap-v0.1.json",
+  "title": "LS-DYNA Manual PageMap v0.1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "document",
+    "pages"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "0.1"
+    },
+    "document": {
+      "type": "object",
+      "required": [
+        "document_id",
+        "manual_type",
+        "release",
+        "volume"
+      ],
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manual_type": {
+          "enum": [
+            "keyword",
+            "theory"
+          ]
+        },
+        "release": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "volume": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 3
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "manual_type": {
+                "const": "keyword"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "document_id": {
+                "pattern": "^keyword-volume-[123]$"
+              },
+              "volume": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "manual_type": {
+                "const": "theory"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "document_id": {
+                "const": "theory"
+              },
+              "volume": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "pdf_page",
+          "manual_page",
+          "evidence"
+        ],
+        "properties": {
+          "pdf_page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "manual_page": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9]+-[0-9]+$"
+          },
+          "evidence": {
+            "enum": [
+              "footer",
+              "anchor",
+              "interpolated",
+              null
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false
+}

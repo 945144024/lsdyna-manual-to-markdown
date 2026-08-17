@@ -1,10 +1,11 @@
-# Workspace Directory
+# 本地工作目录
 
-本目录用于存放用户本地运行生成的中间缓存、解析输出与日志数据，例如：
+本目录存放运行时生成且不进入版本控制的中间产物和报告：
 
-- `run_*/`：`lsdyna-manual build` 与 `inspect` 的本地输出；
-- `robustness/`：多 release 的本地检查输出与汇总数据；
-- `manual_section_checklist.xlsx`：由本地脚本生成的人工核对表；
-- `generate_manual_checklist.py`：重新生成上述核对表的本地脚本。
+- `run_*/intermediate/`：PageMap、SectionMap、TOC 索引和 inspection issues；
+- `regression/`：R12-R17 回归矩阵、渲染页和审阅材料；
+- `parsing/raw/`：Provider raw artifact 和 transport PDF；
+- `parsing/pageir/`：Canonical PageIR；
+- `parsing/state.json`：页面级 checkpoint。
 
-本目录内容已被 `.gitignore` 排除，不会被提交至 Git 仓库。请勿在此目录中存放未授权分发的敏感数据或版权文件。
+`.gitignore` 排除本目录中的全部内容，仅保留本 README。目录可能包含 Manual 派生内容、signed URL 的脱敏副本和本地运行信息，不得将其提交或分发。

@@ -14,7 +14,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lsdyna-manual",
         description=(
-            "Build a Markdown corpus from a user-supplied LS-DYNA Keyword Manual."
+            "Build a Markdown corpus from user-supplied LS-DYNA Manuals."
         ),
     )
     parser.add_argument(

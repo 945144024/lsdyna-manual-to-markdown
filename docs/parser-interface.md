@@ -1,6 +1,6 @@
-# Parser Interface & Provider Architecture v0.1
+# Parser 与 Provider 架构
 
-本文档定义解析模块的分层结构、各阶段职责与中间表示（IR），是 `parser` 与 `providers` 模块的实现依据。
+本文档定义解析模块的分层结构、各阶段职责与中间表示（IR），是 `parser` 与 `providers` 模块的实现依据。已冻结的 PageMap / SectionMap v0.1 以 `pagemap-sectionmap.md` 为准。
 
 ## 1. 当前阶段目标
 
@@ -22,7 +22,7 @@ Section Reconstruction 与 Corpus Generation 在 PageIR 通过真实页面验证
 
 1. Provider 可替换：Provider 只负责 transport batch 的后端访问；语义解析单位仍由 Document Parser 保持为唯一页面。Provider 原始输出与 Canonical PageIR 之间允许存在 provider-specific 表示与 Adapter；
 2. IR 统一是软件接口契约：任何 Provider 的输出最终都转换为 Canonical PageIR，但不要求底层模型直接按 PageIR Schema 生成输出；
-3. 密钥隔离：配置文件只记录非敏感连接参数与密钥环境变量名，密钥不得进入日志、Corpus、报告或版本控制；
+3. 密钥隔离：API Key 只存在于被 Git 忽略的本地配置和进程内存中，配置对象使用 `SecretStr` 隐藏明文，密钥不得进入日志、Corpus、报告、raw artifact、checkpoint 或版本控制；
 4. 失败可恢复：单页失败不中断整卷处理，构建结果不得掩盖失败条目。
 
 ## 3. 流水线分层
@@ -34,7 +34,7 @@ Section Reconstruction 与 Corpus Generation 在 PageIR 通过真实页面验证
 [ Document Inspection / Segmentation ]   确定性：TOC、页眉页脚、PDF 文本层
       │
       ▼
-[ SectionMap + PageMap ]                 Keyword→候选页；pdf_page↔manual_page
+[ SectionMap + PageMap ]                 Manual section→候选页；pdf_page↔manual_page
       │
       ▼
 [ ParsePlan ]                            page 去重；transport batch 组织
@@ -93,18 +93,20 @@ class PageMapEntry:
 - `interpolated`：仅在满足局部插值条件时填充——相邻两个 anchor 同章，且 PDF 页码差与 manual 页码差相等；
 - `None`：该页没有足够的页脚、锚点或局部插值证据，印刷页码未确定。
 
-PageMap 不假设 `manual_page` 在卷内唯一或全局单调。部分 release 会在子章节起始处重置印刷页码（例如同一卷内出现多个 `12-1`）。`pdf_page` 是唯一且全局有序的来源定位键；`manual_page` 是印刷标签，用于人工对照，允许重复、回退或缺失。
+PageMap 不假设 `manual_page` 在文档内唯一或全局单调。部分 release 会在子章节起始处重置印刷页码。`(document_id, pdf_page)` 是跨文档唯一来源定位键；`manual_page` 是印刷标签，用于人工对照，允许重复、回退或缺失。
 
 SectionMap，Manual 条目到候选 PDF 页范围的映射：
 
 ```python
 class Section:
-    section_id: str                 # SectionMap 唯一标识；Keyword 条目与 keyword_id 相同
-    keyword_id: str | None          # Keyword 条目为规范化名称（规则同 corpus-format.md）；文档章节为 None
-    name: str                       # 完整条目名（Keyword 含 *）
-    volume: int
-    kind: str                       # "keyword" | "document"
-    parent_section_id: str | None   # 文档子章节的顶层文档章节 section_id
+    section_id: str                 # 文档内唯一；Keyword 条目与 keyword_id 相同
+    keyword_id: str | None          # 非 Keyword 章节为 None
+    name: str                       # 完整章节名（Keyword 含 *）
+    document_id: str                # keyword-volume-1/2/3 | theory
+    volume: int | None              # Theory 为 None
+    kind: str                       # "keyword" | "document" | "theory"
+    parent_section_id: str | None
+    section_number: str | None      # Theory 数字层级，如 22.12.3
     pdf_pages: list[int]            # 候选页集合，不构成严格分区
     manual_pages: list[str | None]
 ```
@@ -112,7 +114,7 @@ class Section:
 规则：
 
 - SectionMap 表示候选页集合，不要求条目间构成无重叠分区；相邻条目通常共享一个边界页（前一条目可能在页面中部结束），证据不足时允许保留更大的保守重叠并记 issue，由 Reconstruction 收敛；
-- SectionMap 可包含非 Keyword 文档章节（TOC 顶层非 Keyword 条目，如 INTRODUCTION、GETTING STARTED、REFERENCES、APPENDIX A..W）及其嵌套 TOC 子章节；文档章节 `keyword_id` 为 `None`，`section_id` 为层次化标识（如 `INTRODUCTION_MATERIAL_MODELS`）；仅 `kind == "keyword"` 的条目进入 manifest 与 Markdown 生成；
+- Keyword profile 可包含非 Keyword 文档章节及其嵌套 TOC 子章节；Theory profile 保存数字章节层级与 `section_number`。这些章节的 `keyword_id` 为 `None`；仅 `kind == "keyword"` 的条目进入 Keyword manifest 与 Markdown 生成；
 - Keyword 条目内部的 TOC 子标题（如 Card 名、Remarks）不是独立 SectionMap 条目，暂不选取；
 - 条目起始页采用“印刷页脚候选 + 正文标题核验”的双证据定位：TOC 印刷页码反查页脚得到候选页后，该页必须出现正文标题证据（独立成行的 `*NAME`，或变体声明行，如 `_OPTION`、`_{OPTIONS}`、`_{OPTION1}_..._{OPTION6}`；缩进的 family 条目允许一个前置 family token，如 `_WELDTYPE_{OPTION}`）。候选页无标题时向前搜索标题证据，优先采用正文标题并记 `ANCHOR_CONFLICT`，以兼容 Manual TOC 自身存在的页码错误；running header 存在滞后与别名形态，仅作为归属与校验证据，不单独作为起始页定位依据；
 - 无页脚区域按标题行单调搜索；第一遍只接受页面顶部附近的标题行，避免把 overview/family 页面正文列表中出现的子 Keyword 误判为条目起始页；
@@ -126,27 +128,29 @@ class Section:
 
 Document Parser 负责页面级调度：读取 ParsePlan、生成 transport batch、调用 Provider、保存 raw artifact、调用 Adapter、生成并缓存 PageIR。
 
-语义解析单位是唯一的 `(volume, pdf_page)`，不是 Keyword。SectionMap 中相邻 Keyword 可以共享边界页，因此候选页必须先合并去重，再进入解析。
+语义解析单位是唯一的 `(document_id, pdf_page)`，不是 Keyword 或章节。SectionMap 中相邻章节可以共享边界页，因此候选页必须先按文档合并去重，再进入解析。
 
 #### 4.2.1 ParsePlan
 
 ```python
 class PagePlanEntry:
-    volume: int
+    document_id: str
     pdf_page: int
     manual_page: str | None
     candidate_sections: tuple[str, ...]
+    volume: int | None
 ```
 
 `manual_page` 来自 PageMap。`candidate_sections` 只作为 Inspection provenance 供后续 Reconstruction 使用，不进入 Provider request，也不影响 Adapter 对页面的理解。
 
-连续的同卷页面可以组成 `ParseBatch`，用于多页 Provider API：
+连续的同文档页面可以组成 `ParseBatch`，用于多页 Provider API：
 
 ```python
 class ParseBatch:
     batch_id: int
-    volume: int
+    document_id: str
     pdf_pages: tuple[int, ...]
+    volume: int | None
 ```
 
 `pdf_pages` 的顺序同时定义 Provider 多页结果中 `layoutParsingResults` 的顺序。batch 只是 transport optimization，不成为页面身份或缓存身份。
@@ -168,9 +172,9 @@ Canonical PageIR
 - Adapter：将 raw result 转换为 Canonical PageIR，转换中发现的问题记为 ParseIssue；
 - Provider 和 Adapter 都不接收 Keyword 归属信息，也不根据 Keyword 先验修改页面解析；
 - 多页 Provider 结果必须按 ParseBatch 的页面顺序拆回逐页 raw artifact 与 PageIR，`pdf_page` 身份不得依赖模型输出推断；
-- 当前仓库已实现的 transport Provider 是 `paddleocr-vl-remote`；配置层同时保留 `openai-compatible` Provider 名称，供后续接入兼容端点。
+- 当前仓库唯一支持的 transport Provider 是 `paddleocr-vl-remote`，服务端点为百度 AI Studio PaddleOCR job API。
 
-当前实现通过 `DocumentParser.parse_raw_for_volume()` 和 `DocumentParser.build_pageir_for_volume()` 暴露页面解析流程；单页 `parse_page()` 统一接口尚未暴露为稳定 API。
+当前实现通过 `DocumentParser.parse_raw_for_document()` 和 `DocumentParser.build_pageir_for_document()` 暴露页面解析流程。所有调用方必须显式传入 `document_id`；单页 `parse_page()` 接口尚未暴露为稳定 API。
 
 #### 4.2.3 Raw artifact 与 workspace 布局
 
@@ -180,9 +184,10 @@ Provider raw JSON / JSONL / Markdown 属于 workspace provenance 与调试材料
 <workspace>/parsing/
 ├── state.json                     # page-level checkpoint
 ├── raw/
-│   ├── .transport/                # 提交给 Provider 的临时 batch PDF
-│   └── paddleocr-vl-remote/
-│       └── <model>/
+│   ├── .transport/<document_id>/  # 提交给 Provider 的临时 batch PDF
+│   └── <document_id>/
+│       └── paddleocr-vl-remote/
+│           └── <model>/
 │           └── batches/
 │               └── batch_0001/
 │                   ├── input.pdf
@@ -190,10 +195,10 @@ Provider raw JSON / JSONL / Markdown 属于 workspace provenance 与调试材料
 │                   ├── job.json
 │                   ├── page_map.json
 │                   └── pages/
-│                       ├── volume-2_page_000197.json
-│                       └── volume-2_page_000197.md
+│                       ├── <document_id>_page_000197.json
+│                       └── <document_id>_page_000197.md
 └── pageir/
-    └── volume-2/
+    └── <document_id>/
         └── page_000197.json
 ```
 
@@ -207,7 +212,7 @@ Raw cache 身份：
 
 ```text
 source PDF fingerprint
-+ volume
++ document_id
 + pdf_page
 + provider
 + model
@@ -267,7 +272,7 @@ Adapter 不执行 LS-DYNA-specific 结构修复。真实 Provider 输出可能�
 
 ### 4.3 Normalization / Validation
 
-当前已实现：`PageIR` 结构校验与 `pdf_page` 身份校验，`manual_page` 由 PageMap 填入。
+当前已实现：`PageIR` 结构校验与 `(document_id, pdf_page)` 身份校验，`manual_page` 由 PageMap 填入。
 
 规范定义但尚未实现：PDF 文本层与视觉解析结果的自动比对（`TEXT_LAYER_DIVERGENCE`）。
 
@@ -295,6 +300,7 @@ Reconstruction 根据跨页重复模式与 Manual 结构判断哪些页眉页脚
 
 ```python
 class PageIR:
+    document_id: str              # 源文档身份
     pdf_page: int                 # PDF 页面序号，从 1 开始，应存在
     manual_page: str | None       # Manual 印刷章-页编号，如 "2-131"；无法识别时为 None
     blocks: list[Block]
@@ -363,16 +369,16 @@ v0.1 不引入以下字段；是否需要由真实页面验证结论决定：
 
 各阶段均可产生 issue，随 PageIR 与 SectionMap 向下游传递，最终汇入 `reports/issues.jsonl`（字段定义见 `corpus-format.md`），并影响条目 `status`。当前登记的 code：
 
-- Pipeline / Build：`VOLUME_MISSING`、`VOLUME_INGEST_FAILED`、`PARSE_NOT_IMPLEMENTED`；
+- Pipeline / Build：`UNVERIFIED_RELEASE`、`DOCUMENT_INGEST_FAILED`、`PARSE_NOT_IMPLEMENTED`；
 - Inspection：`SECTION_BOUNDARY_UNCERTAIN`、`TOC_ENTRY_UNRESOLVED`、`ANCHOR_CONFLICT`、`TOC_PAGE_TITLE_NOT_FOUND`；`MANUAL_PAGE_NOT_FOUND` 为预留 code；
 - Parsing：`PAGE_PARSE_FAILED`；
 - Adapter：`TABLE_STRUCTURE_UNCERTAIN`、`READING_ORDER_AMBIGUOUS`、`MATH_PARSE_WARNING`；
-- PageIR / Validation：`PAGEIR_INVALID_PDF_PAGE`、`PAGEIR_PAGE_IDENTITY_MISMATCH`、`PAGEIR_INVALID_BBOX`、`PAGEIR_INVALID_TABLE_ROW`、`PAGEIR_INVALID_TABLE_COLUMN`、`PAGEIR_INVALID_ISSUE_SEVERITY`；
+- PageIR / Validation：`PAGEIR_DOCUMENT_IDENTITY_MISMATCH`、`PAGEIR_INVALID_PDF_PAGE`、`PAGEIR_PAGE_IDENTITY_MISMATCH`、`PAGEIR_INVALID_BBOX`、`PAGEIR_INVALID_TABLE_ROW`、`PAGEIR_INVALID_TABLE_COLUMN`、`PAGEIR_INVALID_ISSUE_SEVERITY`；
 - Validation（planned）：`TEXT_LAYER_DIVERGENCE`。
 
 `code` 为开放集合，新增 code 应在实现处登记语义。
 
-Inspection 的中间产物 `intermediate/volume-N/issues.jsonl` 使用 `InspectionIssue` 序列化；对非 Keyword 文档章节，该中间文件的 `keyword_id` 字段填入 `section_id`（如 `INTRODUCTION_MATERIAL_MODELS`）。最终 Corpus 报告 `reports/issues.jsonl` 的 `keyword_id` 仍遵循 `corpus-format.md`：仅真正归属于 Keyword 的问题填入 Keyword ID，否则为 `null`。
+Inspection 的中间产物 `intermediate/<document_id>/issues.jsonl` 使用 `InspectionIssue` 序列化，并显式包含 `document_id`、`manual_type` 与可空 `volume`。最终 Corpus 报告 `reports/issues.jsonl` 的 `keyword_id` 仍遵循 `corpus-format.md`：仅真正归属于 Keyword 的问题填入 Keyword ID，否则为 `null`。
 
 ## 8. Reliable PageIR 验证计划
 
@@ -400,30 +406,26 @@ Inspection 的中间产物 `intermediate/volume-N/issues.jsonl` 使用 `Inspecti
 
 ## 9. 配置与安全
 
-配置分为两层：
-
-- `provider`、`model`、`base_url`、`job_url` 等非敏感连接参数由配置文件提供；其中 `base_url` 仅用于 `openai-compatible`，`job_url` 仅用于 `paddleocr-vl-remote`；
-- API Key 不直接写入配置文件。配置文件只记录 `api_key_env`，程序运行时通过该环境变量读取密钥。
-
-密钥不得进入日志、Corpus、报告或版本控制。
+`parser.provider` 固定为 `paddleocr-vl-remote`。`model`、`job_url` 和传输参数由 YAML 配置提供；`api_key` 也由配置提供，但只能填写在被 Git 忽略的本地配置中。
 
 ```yaml
 parser:
-  # OpenAI-compatible 端点使用 base_url。
-  provider: "openai-compatible"
-  model: "your-model-name"
-  base_url: "https://api.example.com/v1"
-  api_key_env: "PARSER_API_KEY"
-
-  # PaddleOCR-VL remote 使用 job_url；base_url 对其无效。
-  # provider: "paddleocr-vl-remote"
-  # model: "PaddleOCR-VL-1.6"
-  # job_url: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
-  # api_key_env: "PADDLEOCR_API_KEY"
-
-  # paddleocr-vl-remote 可选传输参数：
-  # timeout_seconds: 1800
-  # poll_interval_seconds: 5
-  # max_retries: 2
-  # batch_size: 5
+  provider: "paddleocr-vl-remote"
+  model: "PaddleOCR-VL-1.6"
+  job_url: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+  api_key: "<local secret>"
+  timeout_seconds: 1800
+  poll_interval_seconds: 5
+  max_retries: 2
+  batch_size: 5
 ```
+
+配置模型使用 Pydantic `SecretStr`，Provider 的 dataclass 也禁止在 `repr` 中显示密钥。缺少 Key 时，只有 Provider 实例化失败；不调用远程 OCR 的 `inspect` 和当前 ingest-only `build` 可以在 `api_key: null` 下运行。
+
+安全不变量：
+
+- 不记录 API Key、Authorization header 或完整配置对象；
+- 不将 signed result URL 持久化到 `job.json`；
+- `corpus.yaml`、报告、PageMap、SectionMap、raw artifact、PageIR 和回归基线均不得包含凭证；
+- 示例配置只能使用 `null` 或占位值，真实凭证必须放入 `configs/local*.yaml`、`configs/*.local.yaml` 或 `configs/*.secret.yaml`；
+- 提交前必须扫描 tracked worktree 和 Git 历史。

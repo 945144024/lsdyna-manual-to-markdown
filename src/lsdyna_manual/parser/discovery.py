@@ -1,21 +1,32 @@
-"""Manual volume discovery and filename-based metadata extraction.
+"""Manual document discovery and filename-based metadata extraction.
 
 Official file naming is not uniform across releases: R13/R14 files use
 ``LS-DYNA_Manual_Volume_I_R13.pdf`` while R15+ files use
 ``LS-DYNA_Manual_Vol_I_R17.pdf``, and older releases mixed case. The
-pattern below tolerates both spellings and case differences.
+patterns below tolerate both spellings and case differences.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from pathlib import Path
+
+from lsdyna_manual.documents import (
+    MANUAL_TYPE_KEYWORD,
+    MANUAL_TYPE_THEORY,
+    ManualDocument,
+    keyword_document_id,
+    normalize_release,
+)
 
 _ROMAN_TO_VOLUME = {"i": 1, "ii": 2, "iii": 3}
 
 MANUAL_FILENAME_RE = re.compile(
     r"^ls-dyna_manual_(?:volume|vol)_(?P<volume>i{1,3})_r(?P<release>\d+(?:\.\d+)?)\.pdf$",
+    re.IGNORECASE,
+)
+THEORY_FILENAME_RE = re.compile(
+    r"^ls-dyna_manual_theory_r(?P<release>\d+(?:\.\d+)?)\.pdf$",
     re.IGNORECASE,
 )
 
@@ -24,72 +35,74 @@ class DiscoveryError(Exception):
     """Raised when manual discovery cannot produce an unambiguous result."""
 
 
-@dataclass(frozen=True)
-class ManualFileInfo:
-    volume: int
-    release: str
-    path: Path
-
-
-def parse_manual_filename(path: Path) -> ManualFileInfo | None:
-    """Derive volume number and release from an official manual filename.
-
-    Returns None when the filename does not follow the Keyword Manual
-    naming pattern; non-keyword manuals (e.g. Theory Manual) do not match.
-    """
+def _parse_keyword_filename(path: Path) -> ManualDocument | None:
+    """Derive Keyword Manual metadata from an official filename."""
     match = MANUAL_FILENAME_RE.match(path.name)
     if match is None:
         return None
-    return ManualFileInfo(
-        volume=_ROMAN_TO_VOLUME[match.group("volume").lower()],
+    volume = _ROMAN_TO_VOLUME[match.group("volume").lower()]
+    return ManualDocument(
+        document_id=keyword_document_id(volume),
+        manual_type=MANUAL_TYPE_KEYWORD,
+        volume=volume,
         release=f"R{match.group('release')}",
         path=path,
     )
 
 
-def discover_volumes(
+def parse_document_filename(path: Path) -> ManualDocument | None:
+    """Parse an official Keyword or Theory Manual filename."""
+    keyword = _parse_keyword_filename(path)
+    if keyword is not None:
+        return keyword
+    match = THEORY_FILENAME_RE.match(path.name)
+    if match is None:
+        return None
+    return ManualDocument(
+        document_id="theory",
+        manual_type=MANUAL_TYPE_THEORY,
+        release=f"R{match.group('release')}",
+        path=path,
+    )
+
+
+def discover_documents(
     manuals_dir: Path,
     expected_release: str | None = None,
-) -> list[ManualFileInfo]:
-    """Find Keyword Manual volumes in a directory.
-
-    When expected_release is given, only files of that release are
-    considered. Raises DiscoveryError when no matching file exists, or when
-    the directory contains ambiguous candidates.
-    """
-    candidates: dict[int, list[ManualFileInfo]] = {}
-    for pdf in sorted(manuals_dir.glob("*.pdf")):
-        info = parse_manual_filename(pdf)
-        if info is not None:
-            candidates.setdefault(info.volume, []).append(info)
+) -> list[ManualDocument]:
+    """Find an unambiguous same-release set of Manual documents."""
+    documents = [
+        document
+        for pdf in sorted(manuals_dir.glob("*.pdf"))
+        if (document := parse_document_filename(pdf)) is not None
+    ]
 
     if expected_release is not None:
-        expected = expected_release.upper()
-        candidates = {
-            volume: [info for info in infos if info.release == expected]
-            for volume, infos in candidates.items()
-        }
-        candidates = {volume: infos for volume, infos in candidates.items() if infos}
-        if not candidates:
+        expected = normalize_release(expected_release)
+        documents = [document for document in documents if document.release == expected]
+        if not documents:
             raise DiscoveryError(
-                f"no Keyword Manual volumes for release {expected} in {manuals_dir}"
+                f"no LS-DYNA Manual documents for release {expected} in {manuals_dir}"
             )
-    else:
-        for volume, infos in candidates.items():
-            releases = {info.release for info in infos}
-            if len(releases) > 1:
-                raise DiscoveryError(
-                    f"multiple releases for volume {volume} in {manuals_dir}: "
-                    f"{sorted(releases)}; set manual.release"
-                )
+    elif documents:
+        releases = {document.release for document in documents}
+        if len(releases) > 1:
+            raise DiscoveryError(
+                f"multiple releases in {manuals_dir}: {sorted(releases)}; "
+                "set manual.release"
+            )
 
-    result: list[ManualFileInfo] = []
-    for volume in sorted(candidates):
-        infos = candidates[volume]
-        if len(infos) > 1:
+    candidates: dict[str, list[ManualDocument]] = {}
+    for document in documents:
+        candidates.setdefault(document.document_id, []).append(document)
+
+    result: list[ManualDocument] = []
+    for document_id in sorted(candidates):
+        matches = candidates[document_id]
+        if len(matches) > 1:
             raise DiscoveryError(
-                f"multiple candidates for volume {volume}: "
-                f"{[info.path.name for info in infos]}"
+                f"multiple candidates for {document_id}: "
+                f"{[document.path.name for document in matches]}"
             )
-        result.append(infos[0])
+        result.append(matches[0])
     return result

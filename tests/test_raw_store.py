@@ -42,6 +42,7 @@ def test_store_paddle_bundle_splits_layout_results_by_page(tmp_path):
     stored = store_paddle_bundle(
         job_result,
         root=tmp_path / "raw",
+        document_id="keyword-volume-2",
         volume=2,
         pdf_pages=[197, 198],
         batch_id=1,
@@ -76,6 +77,7 @@ def test_store_paddle_bundle_rejects_page_count_mismatch(tmp_path):
         store_paddle_bundle(
             job_result,
             root=tmp_path / "raw",
+            document_id="keyword-volume-2",
             volume=2,
             pdf_pages=[197],
             batch_id=1,
@@ -113,6 +115,7 @@ def test_job_metadata_redacts_signed_result_url(tmp_path):
     stored = store_paddle_bundle(
         job_result,
         root=tmp_path / "raw",
+        document_id="keyword-volume-2",
         volume=2,
         pdf_pages=[197],
         batch_id=1,

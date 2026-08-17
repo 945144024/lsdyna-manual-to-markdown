@@ -48,10 +48,15 @@ workspace/*
 !workspace/README.md
 output/
 reports/
+\n# Local credentials and machine-specific configurations
+configs/local*.yaml
+configs/*.local.yaml
+configs/*.secret.yaml
 
 # IDE / Editor files
 .vscode/
 .idea/
+Agent.md
 *.swp
 *.swo
 *~
