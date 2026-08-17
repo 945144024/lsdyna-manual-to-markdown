@@ -10,11 +10,37 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class ProviderError(Exception):
     """Raised when a document provider cannot complete a job."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "provider_error",
+        business_code: int | str | None = None,
+        http_status: int | None = None,
+        job_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.business_code = business_code
+        self.http_status = http_status
+        self.job_id = job_id
+
+
+class ProviderQuotaError(ProviderError):
+    """Raised when the provider reports that the account quota is exhausted."""
+
+    def __init__(self, message: str, **kwargs: Any) -> None:
+        kwargs.pop("category", None)
+        super().__init__(message, category="quota_exhausted", **kwargs)
+
+
+ProviderProgressCallback = Callable[[str, dict[str, Any]], None]
 
 
 @dataclass
@@ -38,6 +64,8 @@ class DocumentProvider(ABC):
         document_id: str,
         pdf_pages: list[int],
         volume: int | None = None,
+        resume_job_id: str | None = None,
+        on_progress: ProviderProgressCallback | None = None,
     ) -> ProviderJobResult:
         """Submit a PDF batch and wait for the raw provider result."""
 

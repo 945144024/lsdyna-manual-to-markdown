@@ -18,7 +18,7 @@ manual:
   #     volume: 2
 
 parser:
-  # The supported remote parser is the Baidu AI Studio PaddleOCR API.
+  # Select either the remote Baidu API or the local PaddleOCR + llama.cpp stack.
   provider: "paddleocr-vl-remote"
   model: "PaddleOCR-VL-1.6"
   job_url: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
@@ -30,7 +30,34 @@ parser:
   timeout_seconds: 1800
   poll_interval_seconds: 5
   max_retries: 2
-  batch_size: 5
+  # Both providers default to one page per request for deterministic page
+  # mapping. Remote users may explicitly increase this after validation.
+  max_batch_pages: 1
+
+  # Optional fallback for Paddle business codes that contain no quota text.
+  # Quota errors are always recorded in parsing/state.json without the API key.
+  quota_exhausted_codes: []
+
+  # Local provider settings. The local provider always enforces
+  # max_batch_pages: 1. Keep this block commented when using the remote provider.
+  # local:
+  #   runtime_dir: "./.runtime/paddleocr-local"
+  #   llama_server_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/llama-server.exe"
+  #   # Instead of an existing path, configure one explicit binary source.
+  #   # llama_server_download_url: "https://example.invalid/llama-server"
+  #   # llama_server_archive_url: "https://example.invalid/llama-server.zip"
+  #   # llama_cuda_archive_url: "https://example.invalid/cuda-runtime.zip"
+  #   llama_server_url: "http://127.0.0.1:8111/v1"
+  #   llama_server_host: "127.0.0.1"
+  #   llama_server_port: 8111
+  #   model_source: "bos"  # PaddleX auxiliary layout-model hoster
+  #   paddlex_cache_dir: "./.runtime/paddleocr-local/paddlex"
+  #   model_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/PaddleOCR-VL-1.6-GGUF.gguf"
+  #   mmproj_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+  #   auto_prepare_runtime: false
+  #   auto_start_server: true
+  #   max_concurrency: 1
+  #   paddleocr_python: "./.runtime/paddleocr-local/venv/bin/python"
 
 output:
   corpus_dir: "./workspace/run_r17"
@@ -39,3 +66,10 @@ options:
   start_page: 1
   end_page: null
   concurrency: 4
+
+validation:
+  # Compare a deterministic sample of PageIR pages against pdftotext output.
+  text_layer_enabled: true
+  text_layer_sample_pages: 3
+  text_layer_min_tokens: 8
+  text_layer_min_visual_recall: 0.65

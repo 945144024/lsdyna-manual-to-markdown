@@ -2,7 +2,7 @@
 
 本文档定义 `lsdyna-manual-builder` 生成的 Keyword Markdown 文档的组织结构与格式规则，是 `markdown` 模块 renderer 的实现依据。
 
-> 本文档描述的是目标 Corpus Markdown 格式。当前 v0.1 开发阶段尚未进入 Section Reconstruction 与最终 Markdown Renderer；Provider 返回的 raw Markdown（如 PaddleOCR-VL remote Markdown）不属于本文档定义的产品格式。实现状态见 `README.md` 与 `parser-interface.md`。
+> 本文档描述目标 Corpus Markdown 格式。当前 v0.1 已实现保守 renderer：按 SectionMap 聚合 PageIR，经 KeywordIR 做共享页块级归属，并识别强 Purpose、Option、Card、变量说明区域、Remarks 与 References 锚点；CardIR 已区分 summary / definition 表、提取 definition 字段槽位并归属 Card 条件文本，VariableDescriptionIR 已完成表格行、跨页续表和强文本标题归属，并支持变量族泛称的 `Applies to` 映射。renderer 输出结构化语义小节，对不确定结构保留 Source Material fallback。真实 EOS/MAT 页面仍发现 summary/definition 重复、`EO/E0`、`VO/V0`、字面量 `\\n` 和重复变量描述等待修订问题。Provider 返回的 raw Markdown（如 PaddleOCR-VL remote Markdown）仍不是最终产品格式。实现状态见 `README.md`、`docs/project-status.md` 与 `parser-interface.md`。
 
 ## 1. 基本规则
 
@@ -131,11 +131,15 @@ Card 表应保留 Manual 显示的全部字段槽位，包括空字段。标准 
 
 条件卡（如 Card 1a、Card 1b）作为独立三级小节与独立表格输出。条件说明只能来自 Manual，不得由 LLM 根据参数关系生成。
 
+Card 条件说明会保留完整原文，并在 Card 小节下增加 `#### Conditions`。实现只识别原文中的 `=`、`EQ.`、`NE.`、`GE.`、`GT.`、`LE.`、`LT.` 等操作符，结构化字段用于定位与检索，不用于改写、解释或推导条件。
+
 ### 4.2 Variable Descriptions
 
 每个变量使用三级标题。
 
 Variable Description 只保存 Manual 中属于该变量的原始说明内容。类型与默认值已存在于 Card 表，不得重复输出；Manual 原变量说明本身包含这些信息时按原文保留。
+
+当 Manual 使用变量族泛称（例如 `Aij`、`Ai, Bi` 或 `Ci`）时，renderer 可根据同一条目 Card 变量目录做确定性前缀映射，并输出 `Applies to: ...`。无法安全映射时保留泛称原文并记录 issue。
 
 ### 4.3 取值条件
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,13 +72,14 @@ def store_paddle_bundle(
             f"{len(pdf_pages)} source pages"
         )
 
+    safe_job_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", job_result.job_id)[:64]
     batch_dir = (
         root
         / document_id
         / job_result.provider
         / job_result.model
         / "batches"
-        / f"batch_{batch_id:04d}"
+        / f"batch_{batch_id:04d}_job_{safe_job_id}"
     )
     pages_dir = batch_dir / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
@@ -99,6 +101,7 @@ def store_paddle_bundle(
         "volume": volume,
         "pdf_pages": list(pdf_pages),
         "job_data": job_data,
+        "timing": dict(job_result.metadata.get("timing", {})),
     }
     job_metadata_path = batch_dir / "job.json"
     job_metadata_path.write_text(

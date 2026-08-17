@@ -43,8 +43,9 @@ def write_corpus(
     documents: list[DocumentIngestInfo],
     parser_provider: str,
     parser_model: str,
+    stats: dict | None = None,
 ) -> None:
-    """Write corpus.yaml. Entry stats stay zero until parsing is implemented."""
+    """Write corpus.yaml with optional reconstructed-entry statistics."""
     _ensure_dirs(corpus_dir)
     document_records = [_document_record(document) for document in documents]
     data = {
@@ -60,7 +61,8 @@ def write_corpus(
             "parser_model": parser_model,
             "timestamp": utc_now_iso(),
         },
-        "stats": {
+        "stats": stats
+        or {
             "entry_count": 0,
             "family_count": 0,
             "status_success": 0,

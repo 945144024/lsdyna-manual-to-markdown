@@ -4,9 +4,9 @@
 
 ## 1. 当前阶段目标
 
-当前里程碑是 Reliable PageIR，而不是完整 Corpus 生成：
+当前主链路已经贯通到首版 Keyword Corpus：
 
-> 给定一组具有代表性的 LS-DYNA Manual 页面，稳定生成忠实、可验证、带来源定位的统一 PageIR；解析存在问题时形成明确的 ParseIssue，不得静默进入下游。
+> 给定一组具有代表性的 LS-DYNA Manual 页面，稳定生成带来源定位的 PageIR，再按 SectionMap 重建 SectionIR / KeywordIR 和保守 Markdown；解析或重建存在问题时形成明确的 ParseIssue，不得静默进入下游。
 
 验证路径为：
 
@@ -14,9 +14,9 @@
 PDF page → 文档解析后端 → Provider Adapter → Canonical PageIR
 ```
 
-Section Reconstruction 与 Corpus Generation 在 PageIR 通过真实页面验证之后实施。
+Section Reconstruction 与 Corpus Generation 已实现首版，但仍受真实分层回归约束。Theory 最终 Markdown、复杂条件排版和若干 OCR/renderer 缺陷仍在开发中。
 
-本文档定义的 Canonical PageIR v0.1 是待真实 Manual 页面验证的核心接口，不是最终确定的 schema。在验证结论产出前，PageIR 字段不得扩张（见第 6 节）。
+本文档定义的 Canonical PageIR v0.1 是当前稳定接口；任何字段扩张都必须有真实页面证据和 focused tests（见第 6 节）。
 
 ## 2. 设计目标
 
@@ -55,18 +55,18 @@ Section Reconstruction 与 Corpus Generation 在 PageIR 通过真实页面验证
 [ Normalization / Validation ]           manual_page 归一、结构校验、ParseIssue
       │
       ▼
-[ Reliable PageIR validation gate ]      10–20 代表性真实页面，尚未完成
+[ Reliable PageIR validation gate ]      结构校验；真实页面回归持续进行
       │
       ▼
-[ Section Reconstruction ]               planned，尚未实现
+[ Section / Keyword Reconstruction ]     SectionIR、块级 KeywordIR、来源守恒
       │
       ▼
-[ Markdown / Manifest Output ]           planned，尚未实现
+[ Markdown / Manifest Output ]           保守 renderer 已实现；语义小节初版完成
 ```
 
 阶段边界原则：
 
-- PDF 页码与 Manual 印刷页码的映射、Manual 条目（Keyword）的 PDF 页范围，以及 TOC、页眉页脚、PDF 文本能提供的确定性结构信息，应在解析前由 Inspection 阶段确定，不得由 VLM 或 Reconstruction 猜测 Keyword 边界；
+- PDF 页码与 Manual 印刷页码的映射、Manual 条目（Keyword）的候选 PDF 页范围，以及 TOC、页眉页脚、PDF 文本能提供的确定性结构信息，应在解析前由 Inspection 阶段确定；Reconstruction 只在 PageIR block 中用强标题证据确认共享页的块归属，不重新推断候选页范围；
 - 模型负责文档感知，程序负责结构重建：Reconstruction 与 Markdown 渲染为确定性代码，不引入第二个 LLM 阶段重新阅读 PageIR 或组织 Markdown。
 
 ## 4. 阶段职责
@@ -143,7 +143,11 @@ class PagePlanEntry:
 
 `manual_page` 来自 PageMap。`candidate_sections` 只作为 Inspection provenance 供后续 Reconstruction 使用，不进入 Provider request，也不影响 Adapter 对页面的理解。
 
-连续的同文档页面可以组成 `ParseBatch`，用于多页 Provider API：
+连续的同文档页面可以组成 `ParseBatch`，用于多页 Provider API。已定位的
+SectionMap 章节起点是批次软边界，批次不会跨过该起点；`max_batch_pages` 是每批
+页面数的硬上限。远程和本地 Provider 当前默认值均为 1，以保持页面映射与故障
+隔离一致；远程 Provider 可显式调高。相邻章节共享的边界页仍只解析一次，并归入以
+该页为起点的新批次：
 
 ```python
 class ParseBatch:
@@ -154,6 +158,9 @@ class ParseBatch:
 ```
 
 `pdf_pages` 的顺序同时定义 Provider 多页结果中 `layoutParsingResults` 的顺序。batch 只是 transport optimization，不成为页面身份或缓存身份。
+
+每批 Provider 调用在 `job.json` 中记录上传、等待、结果下载和总耗时。耗时
+元数据不得包含 API Key 或 signed result URL。
 
 #### 4.2.2 Provider 与 Adapter
 
@@ -172,7 +179,8 @@ Canonical PageIR
 - Adapter：将 raw result 转换为 Canonical PageIR，转换中发现的问题记为 ParseIssue；
 - Provider 和 Adapter 都不接收 Keyword 归属信息，也不根据 Keyword 先验修改页面解析；
 - 多页 Provider 结果必须按 ParseBatch 的页面顺序拆回逐页 raw artifact 与 PageIR，`pdf_page` 身份不得依赖模型输出推断；
-- 当前仓库唯一支持的 transport Provider 是 `paddleocr-vl-remote`，服务端点为百度 AI Studio PaddleOCR job API。
+- 当前仓库支持 `paddleocr-vl-remote`（百度 AI Studio job API）和
+  `paddleocr-vl-local`（本地 PaddleOCR Pipeline + llama-server）。
 
 当前实现通过 `DocumentParser.parse_raw_for_document()` 和 `DocumentParser.build_pageir_for_document()` 暴露页面解析流程。所有调用方必须显式传入 `document_id`；单页 `parse_page()` 接口尚未暴露为稳定 API。
 
@@ -189,7 +197,7 @@ Provider raw JSON / JSONL / Markdown 属于 workspace provenance 与调试材料
 │       └── paddleocr-vl-remote/
 │           └── <model>/
 │           └── batches/
-│               └── batch_0001/
+│               └── batch_0001_job_<job-id>/
 │                   ├── input.pdf
 │                   ├── raw_result.jsonl
 │                   ├── job.json
@@ -219,7 +227,10 @@ source PDF fingerprint
 + provider semantic identity
 ```
 
-Provider semantic identity 只包含会影响模型输出内容的配置。`batch_size`、`timeout`、`poll_interval`、`max_retries` 属于 transport 参数，不使 raw cache 失效。
+Provider semantic identity 只包含会影响模型输出内容的配置。`max_batch_pages`、`timeout`、`poll_interval`、`max_retries` 属于 transport 参数，不使 raw cache 失效。
+
+`max_retries` 除网络异常外，也用于 Paddle API 明确返回“提交队列已满”且尚未
+创建 Job 的响应；其他 HTTP 或任务失败不会自动重新提交，避免产生重复任务。
 
 PageIR cache 在 raw cache 之上增加：
 
@@ -234,7 +245,18 @@ Adapter identity
 
 - `raw_done`：Provider raw artifact 已成功保存；
 - `done`：PageIR 已成功生成并保存；
+- `paused_quota`：Provider 配额耗尽，页面保持待恢复状态；
 - `failed`：该页面解析失败，可在后续运行中重试。
+
+`state.json` schema v0.2 还保存 transport batch 状态。Provider 创建 Job 后立即
+记录 `job_id`；进程中断后优先轮询该 Job，不重复提交。恢复前会重新计算源 PDF
+hash，并读取 raw / PageIR JSON 核对文档、页码、Provider 与 model 身份。仅在
+本地 artifact 校验通过时才跳过页面。
+
+解析进度以 ParsePlan 中的唯一页面数为分母，不以 batch 数为分母。终端同时
+显示当前阶段、文档、SectionMap 候选章节和批次页段。配额耗尽是全局暂停条件：
+停止提交后续 batch、原子保存 checkpoint，并以独立退出码返回；恢复不依赖
+Provider 提供配额重置时间。
 
 默认失败不中断其他页面或 batch；失败页面记录错误后继续处理后续页面。
 
@@ -274,27 +296,42 @@ Adapter 不执行 LS-DYNA-specific 结构修复。真实 Provider 输出可能�
 
 当前已实现：`PageIR` 结构校验与 `(document_id, pdf_page)` 身份校验，`manual_page` 由 PageMap 填入。
 
-规范定义但尚未实现：PDF 文本层与视觉解析结果的自动比对（`TEXT_LAYER_DIVERGENCE`）。
+当前已实现 PDF 文本层与视觉解析结果的确定性抽样比对。默认对每个有 PageIR 的文档抽取首、中、尾最多 3 个 PDF 页面，使用 `pdftotext -layout` 得到文本层 token，与 PageIR 中的 TextBlock 和 TableBlock 单元格做 multiset overlap。结果写入 `reports/text_layer_comparison.json`，低于阈值时将 reconstruction 状态提升为 `warning`，但不会覆盖 PageIR 或自动修复原文。
 
 - `manual_page` 归一：`PageIR.manual_page` 以 PageMap 为基准填充与核对，不要求 Provider 理解印刷页码；
 - PDF 文本层定位为 Evidence / Validation Source：将视觉解析结果与文本层证据比对，冲突时记录 issue（如 `TEXT_LAYER_DIVERGENCE`），不得静默覆盖视觉解析内容；
+- 文本层不可用、页数不足或 `pdftotext` 执行失败时记录 `TEXT_LAYER_PAGE_UNAVAILABLE` 或 `TEXT_LAYER_COMPARISON_SKIPPED`，保留已生成的 PageIR；
+- `validation.text_layer_enabled`、`text_layer_sample_pages`、`text_layer_min_tokens` 与 `text_layer_min_visual_recall` 控制抽样与阈值；
 - v0.1 不定义任何自动修复规则；仅当某类错误模式被证明可以安全地确定性修复后，才允许增加 repair rule，且修复行为应记 issue 说明。
 
-### 4.4 Section Reconstruction（planned）
+### 4.4 Section / Keyword Reconstruction
 
-当前尚未实现。目标职责：
+当前已实现首版确定性重建：
 
 - 输入：按 SectionMap 聚合的 Canonical PageIR 与 SectionMap 本身；
-- 职责：Keyword 边界确认（与 SectionMap 不一致时收敛并记 issue）、跨页块合并、Card / Variable Description / Remarks 结构恢复；
-- 全部为确定性代码。跨页表格首先尝试基于 bbox 列对齐等程序化方法；真实数据证明无法可靠确定性处理的结构单独讨论，不得预设第二个 LLM 阶段。
+- SectionIR 保留候选页范围，并报告缺页、空页和共享边界页；
+- KeywordIR 使用 `(document_id, pdf_page, block_index)` 作为来源引用；
+- 共享边界页仅在后续 Keyword 标题可由单个 TextBlock 强匹配时切分，否则保留双方内容并记录歧义；
+- 页眉页脚从正文流中移出，但仍保留为 `ignored_blocks` 来源证据；
+- 明确的 `Purpose:`、`Available options are:`、`Card Summary:`、`Data Card Definitions:`、`VARIABLE | DESCRIPTION`、`Remarks:` 和 `References:` 锚点用于确定语义区域；
+- Card 通过 `Card N` 文本与表内 Card 行聚合；同一 TableBlock 可按 Card 行拆为多个语义行区间，但原始表块只参与一次 block 守恒记账；
+- Card 表区分 `summary` 与 `definition`。仅 definition 区间按 Card 表头的固定槽位提取 Variable、Type 和 Default；OCR 短行按表头补 `null`，不从 summary 表猜测缺失字段；
+- Card 字段保留 `(document_id, pdf_page, block_index, row, column)` 单元格来源，非空变量按首次出现顺序去重形成 Keyword 变量目录；
+- Card 条件文本从归属于该 Card 的原文块中提取为 `CardConditionIR`，支持 `=`、`EQ.`、`NE.`、`GE.`、`GT.`、`LE.`、`LT.`；结构化字段保留 variable/operator/values/raw/source_text/source，不改写完整原句；
+- Card 与 Variable Description 的跨页表格只在存在明确续接证据时设置 `continuation_of` 并合并渲染；孤立续表保留原始块并记录 issue，不根据页面邻接关系猜测；
+- 显式 Option 仅从 Option 列表读取；Variable Description 表格按变量目录拆为行区间，空首列续行归入当前变量；单独文本变量标题及其后续块在强匹配时归入 `VariableDescriptionIR`；
+- `VariableDescriptionIR.applies_to` 保存变量族泛称到同一 Keyword 具体 Card 槽位的确定性映射，例如 `Aij` → `A10`/`A11`/`A20`，无法确认时不扩展；
+- 不能由强规则归类的正文块保存在 `unclassified_blocks`，并通过守恒校验防止静默丢失。
+
+Card 表头无有效槽位、缺少 Variable 行或出现重复语义行时分别记录 `CARD_DEFINITION_SLOT_HEADER_INVALID`、`CARD_DEFINITION_VARIABLE_ROW_MISSING` 或 `CARD_DEFINITION_ROW_AMBIGUOUS`，同时保留原表。Variable Description 无法匹配 Card 变量目录，或出现没有当前变量的续行时记录 `VARIABLE_DESCRIPTION_UNMATCHED_TITLE` / `VARIABLE_DESCRIPTION_CONTINUATION_ORPHAN`，保留原始块。Markdown renderer 已将已确认结构输出为 Purpose、Options、Card Definitions、Variable Descriptions、Remarks 和 References 小节；跨页续表仅按显式 continuation 合并，更深层的版面推断仍按真实页面证据逐步增加。全部规则使用确定性代码；无法可靠确定的结构保留原始块并记 issue，不预设第二个 LLM 阶段。
 
 ## 5. Header 与 Footer 的下游使用
 
 Reconstruction 根据跨页重复模式与 Manual 结构判断哪些页眉页脚内容应清理，哪些内容可用于 Keyword 归属核对与 Manual 页码恢复。
 
-## 6. Canonical PageIR v0.1（待验证 schema）
+## 6. Canonical PageIR v0.1
 
-当前代码已实现 v0.1 数据模型、JSON 序列化与基础结构校验。这里“v0.1”是当前软件接口边界；字段集合尚未最终确定，必须等待代表性真实页面验证结论。
+当前代码已实现 v0.1 数据模型、JSON 序列化与基础结构校验。这里“v0.1”是当前软件接口边界；它已经用于真实页面回归，但在下一次正式发布前仍允许通过兼容方式补充字段。
 
 ### 6.1 PageIR
 
@@ -374,15 +411,40 @@ v0.1 不引入以下字段；是否需要由真实页面验证结论决定：
 - Parsing：`PAGE_PARSE_FAILED`；
 - Adapter：`TABLE_STRUCTURE_UNCERTAIN`、`READING_ORDER_AMBIGUOUS`、`MATH_PARSE_WARNING`；
 - PageIR / Validation：`PAGEIR_DOCUMENT_IDENTITY_MISMATCH`、`PAGEIR_INVALID_PDF_PAGE`、`PAGEIR_PAGE_IDENTITY_MISMATCH`、`PAGEIR_INVALID_BBOX`、`PAGEIR_INVALID_TABLE_ROW`、`PAGEIR_INVALID_TABLE_COLUMN`、`PAGEIR_INVALID_ISSUE_SEVERITY`；
-- Validation（planned）：`TEXT_LAYER_DIVERGENCE`。
+- Reconstruction：`SECTION_PAGE_RANGE_MISMATCH`、`SECTION_PAGEIR_MISSING`、`SECTION_SHARED_BOUNDARY_PAGE`、`SECTION_CONTENT_EMPTY`、`KEYWORD_BOUNDARY_RESOLVED`、`KEYWORD_BOUNDARY_AMBIGUOUS`、`KEYWORD_CONTENT_EMPTY`、`KEYWORD_BLOCK_ASSIGNED_MULTIPLE_TIMES`、`KEYWORD_BLOCK_ACCOUNTING_MISMATCH`、`CARD_DEFINITION_SLOT_HEADER_INVALID`、`CARD_DEFINITION_VARIABLE_ROW_MISSING`、`CARD_DEFINITION_ROW_AMBIGUOUS`、`VARIABLE_DESCRIPTION_UNMATCHED_TITLE`、`VARIABLE_DESCRIPTION_CONTINUATION_ORPHAN`；
+- Validation：`TEXT_LAYER_DIVERGENCE`、`TEXT_LAYER_PAGE_UNAVAILABLE`、`TEXT_LAYER_COMPARISON_SKIPPED`。
 
 `code` 为开放集合，新增 code 应在实现处登记语义。
 
 Inspection 的中间产物 `intermediate/<document_id>/issues.jsonl` 使用 `InspectionIssue` 序列化，并显式包含 `document_id`、`manual_type` 与可空 `volume`。最终 Corpus 报告 `reports/issues.jsonl` 的 `keyword_id` 仍遵循 `corpus-format.md`：仅真正归属于 Keyword 的问题填入 Keyword ID，否则为 `null`。
 
-## 8. Reliable PageIR 验证计划
+## 8. 分层语义回归
 
-第一轮真实测试不整卷运行，只选取约 10–20 个代表性真实页面，覆盖：
+当前语义回归使用独立的分层随机抽样 manifest，不整卷运行。对 Volume I、II、III 和 Theory 分别按短章节（1～2 页）、中章节（3～6 页）、长章节（7～40 页）抽取默认 `3/4/3` 个 SectionMap 章节，并用少量显式 anchor 补充低频结构。manifest 固定 seed、源 PDF hash、SectionMap 章节身份和候选页范围，输出到 `workspace/regression/<release>/semantic-sample/sample_manifest.json`。
+
+抽样与检测命令：
+
+```bash
+lsdyna-manual sample-regression \
+  --manuals-dir manuals \
+  --release R17 \
+  --intermediate-dir workspace/regression/r17/intermediate \
+  --pageir-dir workspace/run_r17/parsing/pageir \
+  --output-dir workspace/regression/r17/semantic-sample \
+  --seed 20260817
+```
+
+每个样本检测：
+
+- PageIR 是否覆盖完整候选页范围；
+- SectionIR / KeywordIR block accounting 是否守恒；
+- Card、条件、Variable Description、变量族和显式续表的归属；
+- Markdown 质量候选，包括 Card summary/definition 双重输出、混淆标识符（如 `EO/E0`）、字面量 `\\n`、重复变量描述和 Source Material fallback；
+- PDF 文本层 visual recall、warning/error 和 unresolved issue 数量。
+
+`not_parsed` 只表示当前样本还没有 PageIR，不等同于解析失败。当前已知边界样本可通过重复 `--anchor DOCUMENT_ID:SECTION_ID` 加入，不改变分层随机选择。
+
+第一轮抽样的结构覆盖目标包括：
 
 - 普通正文；
 - 标准 Card；
@@ -402,11 +464,16 @@ Inspection 的中间产物 `intermediate/<document_id>/issues.jsonl` 使用 `Ins
 - Card 条件说明与表格的关联是否可恢复；
 - 跨页结构在 raw result 中的实际表现形式。
 
-验证结论用于决定 PageIR 字段的增减与 Reconstruction 算法，不用于评测模型综合分数。
+验证结论用于决定 PageIR 字段与 Reconstruction 算法的下一步修订，不用于评测模型综合分数。当前暂停点和实际页数见 `docs/project-status.md`。
 
 ## 9. 配置与安全
 
-`parser.provider` 固定为 `paddleocr-vl-remote`。`model`、`job_url` 和传输参数由 YAML 配置提供；`api_key` 也由配置提供，但只能填写在被 Git 忽略的本地配置中。
+`parser.provider` 可选 `paddleocr-vl-remote` 或 `paddleocr-vl-local`。本地 provider
+强制 `max_batch_pages: 1`，由独立 PaddleOCR Python 环境运行完整版面解析，VLM
+识别通过本机 `llama-server` 完成。自动准备必须同时满足配置中的
+`auto_prepare_runtime: true` 与 CLI 的 `--allow-runtime-install`；普通解析不会
+静默修改环境。准备逻辑可以下载配置的模型、布局模型和明确指定的 llama-server
+归档，但不会安装 NVIDIA 驱动、CUDA/WSL，也不会推断二进制下载来源。
 
 ```yaml
 parser:
@@ -417,7 +484,21 @@ parser:
   timeout_seconds: 1800
   poll_interval_seconds: 5
   max_retries: 2
-  batch_size: 5
+  max_batch_pages: 1
+  # Local mode example:
+  # provider: "paddleocr-vl-local"
+  # max_batch_pages: 1  # local mode enforces this value
+  # local:
+  #   runtime_dir: "./.runtime/paddleocr-local"
+  #   paddleocr_python: "./.runtime/paddleocr-local/venv/bin/python"
+  #   llama_server_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/llama-server.exe"
+  #   llama_server_url: "http://127.0.0.1:8111/v1"
+  #   model_source: "bos"  # huggingface / modelscope / aistudio / null are also valid
+  #   paddlex_cache_dir: "./.runtime/paddleocr-local/paddlex"
+  #   model_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/PaddleOCR-VL-1.6-GGUF.gguf"
+  #   mmproj_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+  #   auto_prepare_runtime: false
+  #   auto_start_server: true
 ```
 
 配置模型使用 Pydantic `SecretStr`，Provider 的 dataclass 也禁止在 `repr` 中显示密钥。缺少 Key 时，只有 Provider 实例化失败；不调用远程 OCR 的 `inspect` 和当前 ingest-only `build` 可以在 `api_key: null` 下运行。

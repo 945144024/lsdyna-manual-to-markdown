@@ -71,23 +71,35 @@ def build_parse_plan(
     *,
     start_page: int = 1,
     end_page: int | None = None,
-    batch_size: int = 5,
+    max_batch_pages: int = 1,
+    batch_size: int | None = None,
 ) -> ParsePlan:
     """Build a deduplicated page plan from SectionMap candidates.
 
     Overlapping candidate ranges are expected. A page is included once per
     source document and records every candidate section that references it.
     """
-    if batch_size <= 0:
-        raise ValueError("batch_size must be positive")
+    if batch_size is not None:
+        if max_batch_pages != 1:
+            raise ValueError("set max_batch_pages or legacy batch_size, not both")
+        max_batch_pages = batch_size
+    if max_batch_pages <= 0:
+        raise ValueError("max_batch_pages must be positive")
 
     manual_by_page = _manual_page_map(pagemap_by_document)
     candidates: dict[tuple[str, int], set[str]] = {}
+    section_starts: set[tuple[str, int]] = set()
     volume_by_document: dict[str, int | None] = {}
 
     for section in sections:
         document_id = _document_id_for_section(section)
         volume_by_document.setdefault(document_id, section.volume)
+        if section.pdf_pages:
+            section_start = section.pdf_pages[0]
+            if section_start >= start_page and (
+                end_page is None or section_start <= end_page
+            ):
+                section_starts.add((document_id, section_start))
         for pdf_page in section.pdf_pages:
             if pdf_page < start_page:
                 continue
@@ -135,7 +147,9 @@ def build_parse_plan(
             should_split = True
         elif current_pages and entry.pdf_page != current_pages[-1] + 1:
             should_split = True
-        elif len(current_pages) >= batch_size:
+        elif current_pages and (entry.document_id, entry.pdf_page) in section_starts:
+            should_split = True
+        elif len(current_pages) >= max_batch_pages:
             should_split = True
 
         if should_split:
@@ -146,4 +160,43 @@ def build_parse_plan(
         current_pages.append(entry.pdf_page)
 
     flush_batch()
+    return ParsePlan(entries=entries, batches=batches)
+
+
+def limit_parse_plan(
+    plan: ParsePlan,
+    *,
+    document_id: str | None = None,
+    max_pages: int | None = None,
+    selected_pages: set[tuple[str, int]] | None = None,
+) -> ParsePlan:
+    """Select requested pages without changing planned batch identity."""
+    if max_pages is not None and max_pages <= 0:
+        raise ValueError("max_pages must be positive")
+    entries = [
+        entry
+        for entry in plan.entries
+        if document_id is None or entry.document_id == document_id
+        if selected_pages is None
+        or (entry.document_id, entry.pdf_page) in selected_pages
+    ]
+    if max_pages is not None:
+        entries = entries[:max_pages]
+    selected = {(entry.document_id, entry.pdf_page) for entry in entries}
+    batches: list[ParseBatch] = []
+    for batch in plan.batches:
+        pages = tuple(
+            page
+            for page in batch.pdf_pages
+            if (batch.document_id, page) in selected
+        )
+        if pages:
+            batches.append(
+                ParseBatch(
+                    batch_id=batch.batch_id,
+                    document_id=batch.document_id,
+                    pdf_pages=pages,
+                    volume=batch.volume,
+                )
+            )
     return ParsePlan(entries=entries, batches=batches)

@@ -6,11 +6,13 @@
 
 用户提供合法获得的指定版本 LS-DYNA Keyword Manual 和/或 Theory Manual，并配置自己的解析 API。项目在本地转换为结构稳定、来源可追溯、适合 LLM 读取的 Markdown Corpus。
 
-本文档定义目标 Corpus 格式。当前 v0.1 开发阶段尚未完成 Section Reconstruction 与最终 Keyword Markdown Renderer，因此本节描述的是最终可分发 Corpus 的契约，不代表当前 `build` 命令已经产生这些产物。
+本文档定义目标 Corpus 格式。当前 v0.1 已实现 `PageIR → SectionIR → 块级 KeywordIR → 保守 Markdown` 的首版重建，并由 `reconstruct` 命令生成本规范中的 Corpus 产物；Card summary / definition 分区、definition 字段槽位、Keyword 变量目录、Card 条件、跨页续表和 Variable Description 语义小节已进入重建流程。未知结构仍保留为 Source Material 并可能产生 warning；Theory Markdown、复杂条件排版和若干 OCR/renderer 边界仍待真实分层回归后增量完善。兼容保留的 `build` 命令仍只生成 ingest 骨架。
 
 v0.1 是格式转换与结构重建工具，不是翻译器、总结器或技术内容改写器。最终 Markdown 保持 Manual 原始语言，Parser 与 LLM 不得添加解释、翻译、工程常识、推断结论或原文不存在的技术信息。
 
 v0.1 不涉及 RAG、MCP、`.k` 文件解析、Keyword Validator、LSP、Embedding、知识图谱与多版本比较。
+
+实际回归状态、已知 Markdown 问题和当前暂停的本地 OCR 样本见 `docs/project-status.md`。Corpus 规范描述产物形状，不代表每份输入 PDF 都能无 warning 生成完整语义条目。
 
 ## 2. 源文档结构背景
 
@@ -42,7 +44,8 @@ corpus_root/
 │       └── ...
 └── reports/
     ├── summary.json
-    └── issues.jsonl
+    ├── issues.jsonl
+    └── text_layer_comparison.json
 ```
 
 Markdown 文档按 `volume → family → keyword` 三级目录组织。Volume 层应保留，以维持源文档的卷级来源边界；Family 层应保留，用于控制单目录规模并便于人工浏览。全部 Markdown 平铺的方案不采用。
@@ -161,7 +164,9 @@ Manifest 是 Corpus 级权威索引。每条记录只包含身份、来源、路
 
 每次构建生成一套报告，不按 Volume 分拆。
 
-`summary.json` 记录成功、警告与失败条目数量。只要存在 `failed` 条目，构建结果不得报告为全部成功。
+`summary.json` 记录成功、警告与失败条目数量，并包含文本层抽样的配置值、实际样本数、总 issue 数和 `TEXT_LAYER_DIVERGENCE` 数量。只要存在 `failed` 条目或文本层抽样产生 warning/error，构建结果不得报告为全部成功。
+
+`text_layer_comparison.json` 保存每个文档的抽样页、PageIR 与 PDF 文本层 token 计数、重叠数、双向 recall、缺失 token 和相关 issue。它是验证报告，不是正文来源；任何 divergence 都不能静默覆盖 PageIR。
 
 `issues.jsonl` 每行一条质量问题：
 

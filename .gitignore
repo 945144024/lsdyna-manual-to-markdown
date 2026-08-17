@@ -29,6 +29,7 @@ MANIFEST
 # Virtual environments
 .env
 .venv
+.runtime/
 env/
 venv/
 ENV/

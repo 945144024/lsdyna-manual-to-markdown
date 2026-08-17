@@ -36,7 +36,10 @@ def test_store_paddle_bundle_splits_layout_results_by_page(tmp_path):
         job_id="job-1",
         state="done",
         raw_jsonl_text=raw_jsonl,
-        metadata={"job_data": {"state": "done"}},
+        metadata={
+            "job_data": {"state": "done"},
+            "timing": {"total_seconds": 12.5},
+        },
     )
 
     stored = store_paddle_bundle(
@@ -54,6 +57,8 @@ def test_store_paddle_bundle_splits_layout_results_by_page(tmp_path):
     assert (stored.batch_dir / "page_map.json").exists()
     assert [a.pdf_page for a in stored.page_artifacts] == [197, 198]
     assert stored.page_artifacts[0].markdown_path.read_text() == "# page one"
+    job_metadata = json.loads(stored.job_metadata_path.read_text())
+    assert job_metadata["timing"] == {"total_seconds": 12.5}
     page_record = json.loads(stored.page_artifacts[0].json_path.read_text())
     assert page_record["pdf_page"] == 197
     assert page_record["layout_result"]["markdown"]["text"] == "# page one"

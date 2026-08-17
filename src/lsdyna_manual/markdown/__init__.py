@@ -1,5 +1,4 @@
 """Markdown package.
 
-Responsible for formatting and rendering reconstructed LS-DYNA keywords
-into standardized, structured Markdown documents.
+Provides conservative Markdown rendering for reconstructed LS-DYNA sections.
 """
