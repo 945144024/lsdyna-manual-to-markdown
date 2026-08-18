@@ -34,6 +34,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "build", help="run the build pipeline described by a config file"
     )
     build.add_argument("config", help="path to the YAML config file")
+    build.add_argument(
+        "--allow-runtime-install",
+        action="store_true",
+        help=(
+            "allow the local provider to install PaddleOCR dependencies and "
+            "download configured runtime artifacts"
+        ),
+    )
     inspect_cmd = subparsers.add_parser(
         "inspect",
         help="run deterministic document inspection (PageMap/SectionMap)",
@@ -110,7 +118,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     try:
         if args.command == "build":
-            result = run_build(args.config)
+            result = run_build(
+                args.config,
+                allow_runtime_install=args.allow_runtime_install,
+            )
             return result.exit_code
         if args.command == "inspect":
             run_inspection(args.config)

@@ -66,7 +66,7 @@ def test_adapter_maps_parsing_res_list(tmp_path):
     assert page_ir.issues == []
 
 
-def test_adapter_marks_spanning_table_uncertain(tmp_path):
+def test_adapter_preserves_colspan_without_uncertainty(tmp_path):
     path = _write_raw(
         tmp_path,
         [
@@ -84,9 +84,61 @@ def test_adapter_marks_spanning_table_uncertain(tmp_path):
         pdf_page=198,
         manual_page=None,
     )
-    assert any(
-        issue.code == "TABLE_STRUCTURE_UNCERTAIN" for issue in page_ir.issues
+    table = page_ir.blocks[0]
+    assert isinstance(table, TableBlock)
+    assert table.rows[0][0].text == "A"
+    assert table.rows[0][0].column == 0
+    assert table.rows[0][0].colspan == 2
+    assert table.rows[1][1].column == 1
+    assert page_ir.issues == []
+
+
+def test_adapter_positions_cells_after_rowspan(tmp_path):
+    path = _write_raw(
+        tmp_path,
+        [
+            {
+                "block_label": "table",
+                "block_content": (
+                    '<table><tr><td rowspan="2">MID</td><td>first</td></tr>'
+                    "<tr><td>continued<br>line</td></tr></table>"
+                ),
+            }
+        ],
     )
+
+    page_ir = PaddleOCRVLAdapter().adapt_page(
+        path,
+        pdf_page=198,
+        manual_page=None,
+    )
+
+    table = page_ir.blocks[0]
+    assert isinstance(table, TableBlock)
+    assert table.rows[0][0].rowspan == 2
+    assert table.rows[1][0].column == 1
+    assert table.rows[1][0].text == "continued\nline"
+    assert page_ir.issues == []
+
+
+def test_adapter_reports_invalid_span_attribute(tmp_path):
+    path = _write_raw(
+        tmp_path,
+        [
+            {
+                "block_label": "table",
+                "block_content": '<table><tr><td colspan="many">A</td></tr></table>',
+            }
+        ],
+    )
+
+    page_ir = PaddleOCRVLAdapter().adapt_page(
+        path,
+        pdf_page=198,
+        manual_page=None,
+    )
+
+    assert any(issue.code == "TABLE_SPAN_INVALID" for issue in page_ir.issues)
 
 
 def test_adapter_falls_back_to_markdown_when_no_blocks(tmp_path):

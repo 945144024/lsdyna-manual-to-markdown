@@ -15,6 +15,7 @@ import json
 import random
 import re
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -29,7 +30,8 @@ from lsdyna_manual.reconstruction.keyword_ir import (
     literal_cell_newline_count,
     reconstruct_keywords,
 )
-from lsdyna_manual.reconstruction.section_ir import assemble_sections
+from lsdyna_manual.reconstruction.section_ir import SectionIR, assemble_sections
+from lsdyna_manual.reconstruction.theory_ir import TheoryIR, reconstruct_theory
 from lsdyna_manual.validation.text_layer import compare_page_text
 
 
@@ -520,21 +522,55 @@ def detect_sample_manifest(
     output_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict] = []
     keyword_by_document: dict[str, dict[str, KeywordIR]] = {}
+    theory_by_document: dict[str, dict[str, TheoryIR]] = {}
+    section_by_document: dict[str, dict[str, SectionIR]] = {}
     pageirs_by_document: dict[str, dict[int, PageIR]] = {}
     text_pages_by_document: dict[str, list[str]] = {}
     text_layer_issues: list[dict] = []
 
+    samples_by_key = {
+        (sample["document_id"], sample["section_id"]): sample
+        for sample in manifest.get("samples", [])
+    }
     for document_id, sections in navigation.items():
         pages = _load_pageirs(pageir_root, document_id)
         pageirs_by_document[document_id] = pages
         if pages:
+            effective_sections = []
+            for section in sections:
+                sample = samples_by_key.get((document_id, section.section_id))
+                if sample is None:
+                    effective_sections.append(section)
+                    continue
+                manual_by_pdf = dict(
+                    zip(section.pdf_pages, section.manual_pages, strict=False)
+                )
+                sample_pages = list(sample["pdf_pages"])
+                effective_sections.append(
+                    replace(
+                        section,
+                        pdf_pages=sample_pages,
+                        manual_pages=(
+                            list(sample["manual_pages"])
+                            if "manual_pages" in sample
+                            else [manual_by_pdf.get(page) for page in sample_pages]
+                        ),
+                    )
+                )
             assembled = assemble_sections(
-                sections,
+                effective_sections,
                 {(document_id, pdf_page): page for pdf_page, page in pages.items()},
             )
+            section_by_document[document_id] = {
+                section.section_id: section for section in assembled
+            }
             keyword_by_document[document_id] = {
                 keyword.section_id: keyword
                 for keyword in reconstruct_keywords(assembled)
+            }
+            theory_by_document[document_id] = {
+                theory.section_id: theory
+                for theory in reconstruct_theory(assembled)
             }
         if text_layer_enabled and document_id in documents:
             try:
@@ -570,12 +606,15 @@ def detect_sample_manifest(
             "feature_flags": sample["feature_flags"],
             "status": "not_parsed" if not found_pages else "partial" if coverage < 1 else "checked",
             "issues": {},
+            "issue_details": [],
         }
         keyword = keyword_by_document.get(document_id, {}).get(sample["section_id"])
+        theory = theory_by_document.get(document_id, {}).get(sample["section_id"])
         if coverage == 1 and keyword is not None:
             selected_keywords.append(keyword)
             record["status"] = "warning" if keyword.status == "warning" else "checked"
             record["issues"] = _issue_counts(keyword.issues)
+            record["issue_details"] = [issue.to_dict() for issue in keyword.issues]
             card_conditions = sum(len(card.conditions) for card in keyword.cards)
             continuation_count = sum(
                 table.continuation_of is not None
@@ -602,7 +641,29 @@ def detect_sample_manifest(
                     for issue in keyword.issues
                 ),
             }
-        elif coverage == 1 and sample["kind"] == "theory":
+        elif coverage == 1 and theory is not None:
+            record["status"] = "warning" if theory.status == "warning" else "checked"
+            record["issues"] = _issue_counts(theory.issues)
+            record["issue_details"] = [issue.to_dict() for issue in theory.issues]
+            record["semantic"] = {
+                "theory_owned_block_count": len(theory.owned_sources),
+                "theory_content_block_count": len(theory.content_blocks),
+                "theory_ignored_block_count": len(theory.ignored_blocks),
+                "block_accounting_ok": len(theory.owned_sources)
+                == len(theory.content_blocks) + len(theory.ignored_blocks),
+            }
+        elif coverage == 1:
+            section = section_by_document.get(document_id, {}).get(
+                sample["section_id"]
+            )
+            if section is not None:
+                record["issues"] = _issue_counts(section.issues)
+                record["issue_details"] = [
+                    issue.to_dict() for issue in section.issues
+                ]
+                record["status"] = (
+                    "warning" if section.status == "warning" else "checked"
+                )
             record["semantic"] = {"pageir_only": True}
         if coverage == 1 and text_layer_enabled:
             text_pages = text_pages_by_document.get(document_id, [])

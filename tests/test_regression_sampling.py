@@ -4,7 +4,14 @@ import json
 from pathlib import Path
 
 from lsdyna_manual.documents import ManualDocument
-from lsdyna_manual.parser.page_ir import Cell, TableBlock
+from lsdyna_manual.parser.page_ir import (
+    Cell,
+    PageIR,
+    ParseIssue,
+    TableBlock,
+    TextBlock,
+    save_page_ir,
+)
 from lsdyna_manual.parser.segmentation import Section
 from lsdyna_manual.reconstruction.keyword_ir import (
     BlockSourceRef,
@@ -17,6 +24,7 @@ from lsdyna_manual.reconstruction.keyword_ir import (
 )
 from lsdyna_manual.regression_sampling import (
     build_sample_manifest,
+    detect_sample_manifest,
     keyword_quality_findings,
     length_bucket,
     load_sample_page_keys,
@@ -246,3 +254,125 @@ def test_sample_manifest_page_keys_validate_source_hash(tmp_path):
     )
 
     assert keys
+
+
+def test_detection_reports_theory_pageir_issues(tmp_path):
+    document = _document(tmp_path, "theory", None)
+    section = _sections(document.document_id, None)[0]
+    pageir_root = tmp_path / "pageir"
+    save_page_ir(
+        PageIR(
+            document_id="theory",
+            pdf_page=1,
+            manual_page="1-1",
+            blocks=[TextBlock(text="1 Theory section")],
+            issues=[
+                ParseIssue(
+                    severity="warning",
+                    code="READING_ORDER_AMBIGUOUS",
+                    message="test",
+                )
+            ],
+        ),
+        pageir_root / "theory" / "page_000001.json",
+    )
+    manifest = {
+        "schema_version": "0.1",
+        "kind": "semantic-regression-sample",
+        "release": "R17",
+        "seed": 1,
+        "samples": [
+            {
+                "sample_id": "R17-THEORY-001",
+                "document_id": "theory",
+                "section_id": section.section_id,
+                "name": section.name,
+                "kind": "theory",
+                "length_bucket": "short",
+                "page_count": 1,
+                "pdf_pages": [1],
+                "selection_reasons": [],
+                "feature_flags": [],
+            }
+        ],
+    }
+
+    report = detect_sample_manifest(
+        manifest=manifest,
+        documents={"theory": document},
+        navigation={"theory": [section]},
+        pageir_root=pageir_root,
+        output_dir=tmp_path / "report",
+        text_layer_enabled=False,
+    )
+
+    record = report["samples"][0]
+    assert record["status"] == "warning"
+    assert record["issues"] == {"READING_ORDER_AMBIGUOUS": 1}
+    assert record["issue_details"] == [
+        {
+            "severity": "warning",
+            "code": "READING_ORDER_AMBIGUOUS",
+            "message": "test",
+        }
+    ]
+
+
+def test_detection_reports_keyword_issue_details(tmp_path):
+    document = _document(tmp_path, "keyword-volume-2", 2)
+    section = _sections(document.document_id, 2)[0]
+    pageir_root = tmp_path / "pageir"
+    save_page_ir(
+        PageIR(
+            document_id=document.document_id,
+            pdf_page=1,
+            manual_page="1-1",
+            blocks=[TextBlock(text="*K_1\nDescription")],
+            issues=[
+                ParseIssue(
+                    severity="warning",
+                    code="READING_ORDER_AMBIGUOUS",
+                    message="keyword test",
+                )
+            ],
+        ),
+        pageir_root / document.document_id / "page_000001.json",
+    )
+    manifest = {
+        "schema_version": "0.1",
+        "kind": "semantic-regression-sample",
+        "release": "R17",
+        "seed": 1,
+        "samples": [
+            {
+                "sample_id": "R17-KEYWORD-001",
+                "document_id": document.document_id,
+                "section_id": section.section_id,
+                "name": section.name,
+                "kind": "keyword",
+                "length_bucket": "short",
+                "page_count": 1,
+                "pdf_pages": [1],
+                "selection_reasons": [],
+                "feature_flags": [],
+            }
+        ],
+    }
+
+    report = detect_sample_manifest(
+        manifest=manifest,
+        documents={document.document_id: document},
+        navigation={document.document_id: [section]},
+        pageir_root=pageir_root,
+        output_dir=tmp_path / "report",
+        text_layer_enabled=False,
+    )
+
+    record = report["samples"][0]
+    assert record["status"] == "warning"
+    assert record["issues"]["READING_ORDER_AMBIGUOUS"] == 1
+    assert {
+        "severity": "warning",
+        "code": "READING_ORDER_AMBIGUOUS",
+        "message": "keyword test",
+    } in record["issue_details"]

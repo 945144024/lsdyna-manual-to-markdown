@@ -435,6 +435,32 @@ def test_theory_profile_builds_hierarchical_sections():
     assert sections["2.1"].section_number == "2.1"
 
 
+def test_theory_section_ranges_follow_numeric_depth():
+    from lsdyna_manual.parser.segmentation import (
+        PageMapEntry,
+        SectionSpec,
+        _build_sections,
+    )
+
+    specs = [
+        SectionSpec("1", "Root", "1-1", 0, "theory", None, "1"),
+        SectionSpec("1.1", "Child", "1-2", 1, "theory", "1", "1.1"),
+        SectionSpec("1.2", "Sibling", "1-3", 1, "theory", "1", "1.2"),
+    ]
+    sections = _build_sections(
+        specs,
+        {"1": 2, "1.1": 3, "1.2": 4},
+        [PageMapEntry(page, f"1-{page - 1}", "footer") for page in range(1, 5)],
+        4,
+        None,
+        "theory",
+    )
+    by_id = {section.section_id: section for section in sections}
+    assert by_id["1"].pdf_pages == [2, 3, 4]
+    assert by_id["1.1"].pdf_pages == [3, 4]
+    assert by_id["1.2"].pdf_pages == [4]
+
+
 def test_empty_inspection_is_an_error():
     result = inspect_keyword(1, "empty.pdf", FakeExtractor(["cover only"]))
     assert result.stats["sections_located"] == 0

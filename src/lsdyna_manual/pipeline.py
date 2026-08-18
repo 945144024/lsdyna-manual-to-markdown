@@ -7,6 +7,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 from lsdyna_manual import __version__
 from lsdyna_manual.config import BuildConfig, ConfigError, load_config
@@ -18,7 +19,7 @@ from lsdyna_manual.documents import (
     normalize_release,
 )
 from lsdyna_manual.manifest import writer
-from lsdyna_manual.markdown.renderer import render_keywords
+from lsdyna_manual.markdown.renderer import render_keywords, render_theory
 from lsdyna_manual.parser.discovery import (
     DiscoveryError,
     discover_documents,
@@ -26,7 +27,7 @@ from lsdyna_manual.parser.discovery import (
 )
 from lsdyna_manual.parser.adapters.paddleocr_vl import PaddleOCRVLAdapter
 from lsdyna_manual.parser.document_parser import DocumentParser
-from lsdyna_manual.parser.ingest import DocumentIngestInfo, ingest_document
+from lsdyna_manual.parser.ingest import DocumentIngestInfo, ingest_document, sha256_of
 from lsdyna_manual.parser.parse_plan import build_parse_plan, limit_parse_plan
 from lsdyna_manual.parser.page_ir import ParseIssue, load_page_ir
 from lsdyna_manual.parser.parse_state import ParseStateStore
@@ -56,6 +57,7 @@ from lsdyna_manual.providers.paddleocr_vl_remote import (
 from lsdyna_manual.providers.paddleocr_vl_local import PaddleOCRVLLocalProvider
 from lsdyna_manual.reconstruction.section_ir import assemble_sections
 from lsdyna_manual.reconstruction.keyword_ir import reconstruct_keywords
+from lsdyna_manual.reconstruction.theory_ir import reconstruct_theory
 from lsdyna_manual.regression_sampling import load_sample_page_keys
 from lsdyna_manual.validation.text_layer import (
     TextLayerComparisonReport,
@@ -68,6 +70,56 @@ EXIT_FAILED = 2
 EXIT_PAUSED = 3
 
 
+class _CachedRawProvider:
+    """Provider identity used when every requested raw artifact is local."""
+
+    def __init__(self, provider_name: str, model: str, semantic_identity: str) -> None:
+        self.provider_name = provider_name
+        self.config = SimpleNamespace(model=model)
+        self._semantic_identity = semantic_identity
+
+    def semantic_identity(self) -> str:
+        return self._semantic_identity
+
+    def parse_pdf_batch(self, *args, **kwargs):
+        raise ProviderError("cached raw provider cannot submit model inference")
+
+
+def _cached_raw_provider(
+    state_store: ParseStateStore,
+    plan,
+    documents: list[ManualDocument],
+) -> _CachedRawProvider | None:
+    document_by_id = {document.document_id: document for document in documents}
+    identities: set[tuple[str, str, str]] = set()
+    source_hashes: dict[str, str] = {}
+    for entry in plan.entries:
+        state = state_store.get(entry.document_id, entry.pdf_page)
+        document = document_by_id.get(entry.document_id)
+        if state is None or document is None:
+            return None
+        source_hash = source_hashes.setdefault(
+            entry.document_id, sha256_of(document.path)
+        )
+        if (
+            state.status not in {"raw_done", "done"}
+            or state.source_sha256 != source_hash
+            or not state.provider
+            or not state.model
+            or not state.semantic_config_hash
+            or not state.raw_json_path
+            or not Path(state.raw_json_path).is_file()
+        ):
+            return None
+        identities.add(
+            (state.provider, state.model, state.semantic_config_hash)
+        )
+    if len(identities) != 1:
+        return None
+    provider_name, model, semantic_identity = identities.pop()
+    return _CachedRawProvider(provider_name, model, semantic_identity)
+
+
 @dataclass
 class BuildResult:
     exit_code: int
@@ -75,6 +127,12 @@ class BuildResult:
     release: str | None = None
     documents: list[dict] = field(default_factory=list)
     issues: list[dict] = field(default_factory=list)
+    total_pages: int = 0
+    completed_pages: int = 0
+    failed_pages: int = 0
+    section_count: int = 0
+    manifest_path: Path | None = None
+    reports_path: Path | None = None
 
 
 @dataclass
@@ -265,8 +323,21 @@ def run_parsing(
     if not plan.entries:
         raise ConfigError("parse plan contains no pages for the requested range")
 
+    parsing_root = config.output.corpus_dir / "parsing"
+    checkpoint_path = parsing_root / "state.json"
+    state_store = ParseStateStore(checkpoint_path)
+    selected_documents = [
+        document
+        for document in documents
+        if any(
+            entry.document_id == document.document_id for entry in plan.entries
+        )
+    ]
     if provider is None:
-        if config.parser.provider == "paddleocr-vl-local":
+        provider = _cached_raw_provider(state_store, plan, selected_documents)
+        if provider is not None:
+            log("all requested raw artifacts are cached; skipping provider startup")
+        elif config.parser.provider == "paddleocr-vl-local":
             provider = PaddleOCRVLLocalProvider(
                 config.parser.local,
                 model=config.parser.model,
@@ -288,23 +359,12 @@ def run_parsing(
                     quota_exhausted_codes=config.parser.quota_exhausted_codes,
                 )
             )
-
-    parsing_root = config.output.corpus_dir / "parsing"
-    checkpoint_path = parsing_root / "state.json"
-    state_store = ParseStateStore(checkpoint_path)
     parser = DocumentParser(
         provider,
         state_store=state_store,
         raw_root=parsing_root / "raw",
         pageir_root=parsing_root / "pageir",
     )
-    selected_documents = [
-        document
-        for document in documents
-        if any(
-            entry.document_id == document.document_id for entry in plan.entries
-        )
-    ]
     cached_pages: set[tuple[str, int]] = set()
     for document in selected_documents:
         cached_pages.update(
@@ -344,12 +404,36 @@ def run_parsing(
             if terminal is not None:
                 terminal.finish("failed")
             raise
-        parser.build_pageir_for_document(
+        pageir_results = parser.build_pageir_for_document(
             plan,
             PaddleOCRVLAdapter(),
             document_id=document.document_id,
             source_pdf_path=document.path,
         )
+        retry_pages = {
+            result.pdf_page
+            for result in pageir_results
+            if result.status == "parse_empty"
+        }
+        if retry_pages:
+            retry_plan = limit_parse_plan(
+                plan,
+                selected_pages={
+                    (document.document_id, pdf_page)
+                    for pdf_page in retry_pages
+                },
+            )
+            parser.parse_raw_for_document(
+                retry_plan,
+                document.path,
+                document_id=document.document_id,
+            )
+            parser.build_pageir_for_document(
+                retry_plan,
+                PaddleOCRVLAdapter(),
+                document_id=document.document_id,
+                source_pdf_path=document.path,
+            )
         if quota_error is not None:
             break
 
@@ -423,12 +507,13 @@ def run_reconstruction(
     selected_sections = [
         section
         for section in sections
-        if section.kind == "keyword"
+        if section.kind in {"keyword", "theory"}
         and (document_id is None or section.document_id == document_id)
     ]
     if not selected_sections:
         raise ConfigError(
-            "reconstruction contains no keyword sections for the requested document"
+            "reconstruction contains no keyword or theory sections for the "
+            "requested document"
         )
 
     pageir_root = config.output.corpus_dir / "parsing" / "pageir"
@@ -515,17 +600,29 @@ def run_reconstruction(
         legacy_ids_by_section=legacy_ids_by_section,
     )
     keyword_irs = reconstruct_keywords(section_irs)
-    rendered = render_keywords(
-        keyword_irs,
-        corpus_root=config.output.corpus_dir,
-        release=release,
-    )
+    theory_irs = reconstruct_theory(section_irs)
+    rendered = [
+        *render_keywords(
+            keyword_irs,
+            corpus_root=config.output.corpus_dir,
+            release=release,
+        ),
+        *render_theory(
+            theory_irs,
+            corpus_root=config.output.corpus_dir,
+            release=release,
+        ),
+    ]
     records = [item.manifest_record for item in rendered]
     records.sort(
         key=lambda record: (
             record["document_id"],
             record["source_pages"][0]["pdf_page"] if record["source_pages"] else 0,
-            record["keyword_id"] or record["name"] or "",
+            record.get("keyword_id")
+            or record.get("section_id")
+            or record.get("name")
+            or record.get("title")
+            or "",
         )
     )
 
@@ -547,18 +644,21 @@ def run_reconstruction(
     text_layer_issue_count = sum(
         len(report.issues) for report in text_layer_reports
     )
+    support_warning = any(
+        document.support_level == "best-effort" for document in documents
+    )
     status = (
         "failed"
         if failed_count
         else "warning"
-        if warning_count or text_layer_warning
+        if warning_count or text_layer_warning or support_warning
         else "success"
     )
     exit_code = (
         EXIT_FAILED
         if failed_count
         else EXIT_WARNING
-        if warning_count or text_layer_warning
+        if warning_count or text_layer_warning or support_warning
         else EXIT_SUCCESS
     )
 
@@ -575,7 +675,9 @@ def run_reconstruction(
 
     stats = {
         "entry_count": len(records),
-        "family_count": len({record["family"] for record in records if record["family"]}),
+        "family_count": len(
+            {record.get("family") for record in records if record.get("family")}
+        ),
         "status_success": success_count,
         "status_warning": warning_count,
         "status_failed": failed_count,
@@ -594,17 +696,30 @@ def run_reconstruction(
     writer.write_manifest(config.output.corpus_dir, records)
 
     issue_records: list[dict] = []
-    for item in keyword_irs:
+    if support_warning:
+        issue_records.append(
+            _issue(
+                None,
+                severity="warning",
+                code="UNVERIFIED_RELEASE",
+                message=(
+                    f"release {release} is outside the verified R12-R17 matrix; "
+                    "processing continues on a best-effort basis"
+                ),
+            )
+        )
+    for item in [*keyword_irs, *theory_irs]:
         first_page = item.source_pages[0] if item.source_pages else None
         for issue in item.issues:
             issue_records.append(
                 {
                     "document_id": item.document_id,
                     "manual_type": item.manual_type,
-                    "volume": item.volume,
+                    "volume": getattr(item, "volume", None),
                     "pdf_page": first_page.pdf_page if first_page else None,
                     "manual_page": first_page.manual_page if first_page else None,
-                    "keyword_id": item.keyword_id,
+                    "keyword_id": getattr(item, "keyword_id", None),
+                    "section_id": getattr(item, "section_id", None),
                     "severity": issue.severity,
                     "code": issue.code,
                     "message": issue.message,
@@ -700,123 +815,85 @@ def run_reconstruction(
     )
 
 
-def run_build(config_path: Path | str, log: Callable[[str], None] = print) -> BuildResult:
-    """Run the ingest-only build pipeline for configured documents."""
+def run_build(
+    config_path: Path | str,
+    log: Callable[[str], None] = print,
+    *,
+    allow_runtime_install: bool = False,
+    provider: DocumentProvider | None = None,
+    on_progress: ParseProgressCallback | None = None,
+) -> BuildResult:
+    """Run inspect, resumable parsing, and reconstruction in one command."""
+
     config_path = Path(config_path)
     config = load_config(config_path)
-    log(f"lsdyna-manual-builder {__version__}")
-    log(f"[1/5] load config: {config_path}")
-
     release, documents = _resolve_documents(config)
-    log(f"[2/5] resolve manuals: release {release}")
-    for document in documents:
+    document_records = [document.metadata() for document in documents]
+    log(f"lsdyna-manual-builder {__version__}")
+    log(f"build release {release}: {len(documents)} document(s)")
+
+    log("[1/3] inspect: generate PageMap / SectionMap")
+    run_inspection(config_path, log=log)
+
+    log("[2/3] parse: resume or generate PageIR")
+    parsing = run_parsing(
+        config_path,
+        log=log,
+        provider=provider,
+        on_progress=on_progress,
+        allow_runtime_install=allow_runtime_install,
+    )
+    if parsing.exit_code == EXIT_PAUSED:
         log(
-            f"      {document.document_id}: {document.path.name} "
-            f"({document.support_level})"
+            "build paused during parsing; re-run the same command to resume "
+            f"from {parsing.checkpoint_path}"
         )
+        return BuildResult(
+            exit_code=EXIT_PAUSED,
+            status=parsing.status,
+            release=release,
+            documents=document_records,
+            total_pages=parsing.total_pages,
+            completed_pages=parsing.completed_pages,
+            failed_pages=parsing.failed_pages,
+        )
+
+    log("[3/3] reconstruct: write Markdown, manifest, and reports")
+    reconstruction = run_reconstruction(config_path, log=log)
+    status = reconstruction.status
+    exit_code = reconstruction.exit_code
+    if parsing.exit_code == EXIT_WARNING and exit_code == EXIT_SUCCESS:
+        status = "warning"
+        exit_code = EXIT_WARNING
 
     issues: list[dict] = []
-    if any(document.support_level == "best-effort" for document in documents):
-        issues.append(
-            _issue(
-                None,
-                severity="warning",
-                code="UNVERIFIED_RELEASE",
-                message=(
-                    f"release {release} is outside the verified R12-R17 matrix; "
-                    "processing continues on a best-effort basis"
-                ),
-            )
-        )
+    issues_path = reconstruction.reports_path / "issues.jsonl"
+    if issues_path.is_file():
+        for line in issues_path.read_text(encoding="utf-8").splitlines():
+            try:
+                issue = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(issue, dict):
+                issues.append(issue)
 
-    log("[3/5] ingest documents")
-    records: list[dict] = []
-    ingested: list[DocumentIngestInfo] = []
-    for document in documents:
-        record: dict = {
-            **document.metadata(),
-            "name": document.display_name,
-        }
-        try:
-            document_info = ingest_document(document)
-        except Exception as exc:
-            record["status"] = "failed"
-            records.append(record)
-            issues.append(
-                _issue(
-                    document,
-                    severity="error",
-                    code="DOCUMENT_INGEST_FAILED",
-                    message=f"failed to ingest {document.path.name}: {exc}",
-                )
-            )
-            log(f"      {document.document_id}: FAILED ({exc})")
-            continue
-        record.update(
-            pdf_page_count=document_info.pdf_page_count,
-            sha256=document_info.sha256,
-            status="success",
-        )
-        records.append(record)
-        ingested.append(document_info)
-        log(
-            f"      {document.document_id}: {document_info.pdf_page_count} pages, "
-            f"sha256 {document_info.sha256[:12]}"
-        )
-
-    corpus_dir = config.output.corpus_dir
-    log(f"[4/5] write corpus skeleton: {corpus_dir}")
-    writer.write_corpus(
-        corpus_dir,
-        release=release,
-        documents=ingested,
-        parser_provider=config.parser.provider,
-        parser_model=config.parser.model,
+    log(
+        f"build status: {status}; pages={parsing.completed_pages}/"
+        f"{parsing.total_pages}, sections={reconstruction.section_count}, "
+        f"manifest={reconstruction.manifest_path}"
     )
-    writer.write_manifest(corpus_dir, records=[])
-
-    issues.append(
-        _issue(
-            None,
-            severity="info",
-            code="PARSE_NOT_IMPLEMENTED",
-            message="PDF parsing is not implemented yet; this run performs "
-            "discovery and ingestion only",
-        )
-    )
-
-    severities = {issue["severity"] for issue in issues}
-    if "error" in severities:
-        status, exit_code = "failed", EXIT_FAILED
-    elif "warning" in severities:
-        status, exit_code = "warning", EXIT_WARNING
-    else:
-        status, exit_code = "success", EXIT_SUCCESS
-    summary = {
-        "builder_version": __version__,
-        "timestamp": writer.utc_now_iso(),
-        "status": status,
-        "manual_release": release,
-        "documents": records,
-        "entry_count": 0,
-        "status_success": 0,
-        "status_warning": 0,
-        "status_failed": 0,
-        "notes": [
-            "PDF parsing is not implemented yet; this run performs "
-            "discovery and ingestion only."
-        ],
-    }
-    log("[5/5] write reports")
-    writer.write_reports(corpus_dir / "reports", summary=summary, issues=issues)
-
-    log(f"status: {status} (exit {exit_code}) - 0 entries; parsing not implemented yet")
     return BuildResult(
         exit_code=exit_code,
         status=status,
         release=release,
-        documents=records,
+        documents=document_records,
         issues=issues,
+        total_pages=parsing.total_pages,
+        completed_pages=parsing.completed_pages,
+        failed_pages=parsing.failed_pages,
+        section_count=reconstruction.section_count,
+        manifest_path=reconstruction.manifest_path,
+        reports_path=reconstruction.reports_path,
     )
 
 

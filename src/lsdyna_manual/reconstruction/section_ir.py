@@ -76,6 +76,26 @@ def _issue(code: str, message: str, *, severity: str = "warning") -> ParseIssue:
     return ParseIssue(severity=severity, code=code, message=message)
 
 
+def _theory_numbers(section: SectionIR | Section) -> tuple[int, ...]:
+    number = getattr(section, "section_number", None) or section.section_id
+    try:
+        return tuple(int(part) for part in number.split("."))
+    except ValueError:
+        return ()
+
+
+def _theory_hierarchy_overlap(left: Section, right: Section) -> bool:
+    if left.kind != "theory" or right.kind != "theory":
+        return False
+    left_number = _theory_numbers(left)
+    right_number = _theory_numbers(right)
+    if not left_number or not right_number or left_number == right_number:
+        return False
+    return left_number[: len(right_number)] == right_number or right_number[
+        : len(left_number)
+    ] == left_number
+
+
 def assemble_sections(
     sections: list[Section],
     page_irs: Mapping[tuple[str, int], PageIR],
@@ -117,13 +137,35 @@ def assemble_sections(
         pages: list[PageIR] = []
         for source_page in source_pages:
             if shared_page_counts[(section.document_id or "", source_page.pdf_page)] > 1:
-                issues.append(
-                    _issue(
-                        "SECTION_SHARED_BOUNDARY_PAGE",
-                        f"PDF page {source_page.pdf_page} is shared by multiple "
-                        "SectionMap candidates; content is preserved for review",
-                    )
+                owners = [
+                    candidate
+                    for candidate in sections
+                    if candidate.document_id == section.document_id
+                    and source_page.pdf_page in candidate.pdf_pages
+                ]
+                hierarchy_only = len(owners) > 1 and all(
+                    _theory_hierarchy_overlap(section, owner)
+                    for owner in owners
+                    if owner is not section
                 )
+                if hierarchy_only:
+                    issues.append(
+                        _issue(
+                            "THEORY_HIERARCHICAL_PAGE_OVERLAP",
+                            f"PDF page {source_page.pdf_page} is shared by an "
+                            "ancestor/descendant Theory range; ownership is "
+                            "resolved by numeric section hierarchy",
+                            severity="info",
+                        )
+                    )
+                else:
+                    issues.append(
+                        _issue(
+                            "SECTION_SHARED_BOUNDARY_PAGE",
+                            f"PDF page {source_page.pdf_page} is shared by multiple "
+                            "SectionMap candidates; content is preserved for review",
+                        )
+                    )
             page_ir = page_irs.get((section.document_id or "", source_page.pdf_page))
             if page_ir is None:
                 issues.append(
@@ -134,7 +176,10 @@ def assemble_sections(
                 )
                 continue
             pages.append(page_ir)
-            if not page_ir.blocks:
+            source_blank = any(
+                issue.code == "SOURCE_BLANK_PAGE" for issue in page_ir.issues
+            )
+            if not page_ir.blocks and not source_blank:
                 issues.append(
                     _issue(
                         "SECTION_CONTENT_EMPTY",
@@ -147,7 +192,7 @@ def assemble_sections(
             status = "failed"
         elif any(issue.severity == "error" for issue in issues):
             status = "warning"
-        elif issues:
+        elif any(issue.severity in {"warning", "error"} for issue in issues):
             status = "warning"
         else:
             status = "success"

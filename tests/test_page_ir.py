@@ -1,4 +1,6 @@
-"""Unit tests for the Canonical PageIR v0.1 data model."""
+"""Unit tests for the Canonical PageIR v0.2 data model."""
+
+import pytest
 
 from lsdyna_manual.parser.page_ir import (
     Cell,
@@ -9,6 +11,7 @@ from lsdyna_manual.parser.page_ir import (
     TableBlock,
     TextBlock,
     block_from_dict,
+    table_grid_rows,
     validate_page_ir,
 )
 
@@ -50,14 +53,81 @@ def test_page_ir_roundtrip():
     assert restored.blocks[2].rows[1][1].text == "I"
     assert isinstance(restored.blocks[3], MathBlock)
     assert restored.issues[0].code == "TEST"
-    assert restored.to_dict()["schema_version"] == "0.1"
+    assert restored.to_dict()["schema_version"] == "0.2"
 
 
 def test_block_from_dict_rejects_unknown_type():
-    import pytest
-
     with pytest.raises(ValueError, match="unknown PageIR block type"):
         block_from_dict({"type": "mystery"})
+
+
+def test_page_ir_reads_v01_cells_with_default_spans():
+    payload = _page_ir().to_dict()
+    payload["schema_version"] = "0.1"
+    cell = payload["blocks"][2]["rows"][0][0]
+    cell.pop("rowspan")
+    cell.pop("colspan")
+
+    restored = PageIR.from_dict(payload)
+
+    assert restored.blocks[2].rows[0][0].rowspan == 1
+    assert restored.blocks[2].rows[0][0].colspan == 1
+    assert restored.to_dict()["schema_version"] == "0.2"
+
+
+def test_page_ir_rejects_unknown_schema_version():
+    payload = _page_ir().to_dict()
+    payload["schema_version"] = "9.9"
+
+    with pytest.raises(ValueError, match="unsupported PageIR schema version"):
+        PageIR.from_dict(payload)
+
+
+def test_table_grid_projects_spans_without_copying_text():
+    table = TableBlock(
+        rows=[
+            [
+                Cell(text="Variable", row=0, column=0),
+                Cell(text="Description", row=0, column=1, colspan=2),
+            ],
+            [
+                Cell(text="MID", row=1, column=0, rowspan=2),
+                Cell(text="first", row=1, column=1, colspan=2),
+            ],
+            [Cell(text="continued", row=2, column=1, colspan=2)],
+        ]
+    )
+
+    rows = table_grid_rows(table)
+
+    assert [[cell.text for cell in row] for row in rows] == [
+        ["Variable", "Description", ""],
+        ["MID", "first", ""],
+        ["", "continued", ""],
+    ]
+
+
+def test_validate_page_ir_rejects_invalid_overlapping_spans():
+    page_ir = PageIR(
+        pdf_page=1,
+        manual_page=None,
+        blocks=[
+            TableBlock(
+                rows=[
+                    [
+                        Cell(text="A", row=0, column=0, rowspan=2),
+                        Cell(text="B", row=0, column=1, colspan=0),
+                    ],
+                    [Cell(text="C", row=1, column=0)],
+                ]
+            )
+        ],
+    )
+
+    codes = {issue.code for issue in validate_page_ir(page_ir)}
+
+    assert "PAGEIR_INVALID_TABLE_SPAN" in codes
+    assert "PAGEIR_TABLE_SPAN_OVERLAP" in codes
 
 
 def test_validate_page_ir_identity_and_shape():

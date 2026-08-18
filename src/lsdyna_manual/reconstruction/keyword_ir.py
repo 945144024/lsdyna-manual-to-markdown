@@ -11,9 +11,11 @@ from lsdyna_manual.parser.page_ir import (
     Cell,
     FooterBlock,
     HeaderBlock,
+    MathBlock,
     ParseIssue,
     TableBlock,
     TextBlock,
+    table_grid_rows,
 )
 from lsdyna_manual.reconstruction.section_ir import SectionIR, SectionSourcePage
 
@@ -454,30 +456,37 @@ def _append_card_condition_block(card: CardIR, sourced: SourcedBlock) -> None:
 
 
 def _table_first_row_text(block: TableBlock) -> list[str]:
-    if not block.rows:
+    rows = table_grid_rows(block)
+    if not rows:
         return []
-    return [cell.text.strip() for cell in block.rows[0]]
+    return [cell.text.strip() for cell in rows[0]]
 
 
 def _card_regions(block: TableBlock) -> list[tuple[str, int, int]]:
     """Return Card row regions, preserving all rows in the source table."""
 
+    rows = table_grid_rows(block)
     starts: list[tuple[str, int]] = []
-    for row_index, row in enumerate(block.rows):
+    for row_index, row in enumerate(rows):
         if not row:
             continue
         match = re.fullmatch(
-            r"Card\s+([0-9]+[A-Za-z]?(?:\.[0-9]+)?)\s*:?",
+            r"Cards?(?:\s+([0-9]+[A-Za-z]?(?:\.[0-9]+)?))?\s*:?",
             row[0].text.strip(),
             re.IGNORECASE,
         )
         if match is not None:
-            starts.append((f"Card {match.group(1)}", row_index))
+            starts.append(
+                (
+                    f"Card {match.group(1)}" if match.group(1) else "Card",
+                    row_index,
+                )
+            )
     return [
         (
             label,
             start,
-            starts[index + 1][1] if index + 1 < len(starts) else len(block.rows),
+            starts[index + 1][1] if index + 1 < len(starts) else len(rows),
         )
         for index, (label, start) in enumerate(starts)
     ]
@@ -525,12 +534,13 @@ def _row_indices_by_label(
     end: int,
     labels: set[str],
 ) -> list[int]:
+    rows = table_grid_rows(block)
     normalized_labels = {_normalized_row_label(label) for label in labels}
     return [
         row_index
         for row_index in range(start, end)
-        if block.rows[row_index]
-        and _normalized_row_label(block.rows[row_index][0].text)
+        if rows[row_index]
+        and _normalized_row_label(rows[row_index][0].text)
         in normalized_labels
     ]
 
@@ -544,7 +554,8 @@ def _definition_fields(
     block = sourced.block
     if not isinstance(block, TableBlock) or row_start >= row_end:
         return []
-    header = block.rows[row_start]
+    rows = table_grid_rows(block)
+    header = rows[row_start]
     slot_count = max(0, len(header) - 1)
     if slot_count == 0:
         issues.append(
@@ -603,17 +614,28 @@ def _definition_fields(
     split_variables: dict[int, str] = {}
     split_types: dict[int, str] = {}
     if variable_row is not None:
-        combined_labels = set(
-            _normalized_row_label(block.rows[variable_row][0].text).split()
-        )
+        combined_labels = set(_normalized_row_label(rows[variable_row][0].text).split())
         for slot in range(1, slot_count + 1):
-            raw = _cell_text(block.rows[variable_row], slot)
+            raw = _cell_text(rows[variable_row], slot)
             if raw is None:
                 continue
             parts = _logical_cell_lines(raw)
             if len(parts) == 2 and _looks_like_field_type(parts[1]):
                 split_variables[slot] = parts[0]
                 split_types[slot] = parts[1]
+                continue
+            inline = re.fullmatch(
+                r"(.+?)\s+([A-Z](?:\s*/\s*[A-Z])?)",
+                raw.strip(),
+                re.IGNORECASE,
+            )
+            if (
+                inline is not None
+                and "type" in combined_labels
+                and _looks_like_field_type(inline.group(2))
+            ):
+                split_variables[slot] = inline.group(1).strip()
+                split_types[slot] = inline.group(2).strip()
 
     compressed_type_row: int | None = None
     compressed_default_row: int | None = None
@@ -623,10 +645,10 @@ def _definition_fields(
         and "type" in combined_labels
         and candidate_row is not None
         and candidate_row < row_end
-        and len(block.rows[candidate_row]) <= slot_count
+        and len(rows[candidate_row]) <= slot_count
         and all(
             not cell.text.strip() or _looks_like_field_type(cell.text)
-            for cell in block.rows[candidate_row]
+            for cell in rows[candidate_row]
         )
     ):
         compressed_type_row = candidate_row
@@ -636,7 +658,7 @@ def _definition_fields(
         and "default" in combined_labels
         and candidate_row is not None
         and candidate_row < row_end
-        and len(block.rows[candidate_row]) <= slot_count
+        and len(rows[candidate_row]) <= slot_count
     ):
         compressed_default_row = candidate_row
 
@@ -644,24 +666,24 @@ def _definition_fields(
     for slot in range(1, slot_count + 1):
         variable = split_variables.get(slot)
         if variable is None and variable_row is not None:
-            variable = _cell_text(block.rows[variable_row], slot)
+            variable = _cell_text(rows[variable_row], slot)
         field_type = (
-            _cell_text(block.rows[type_row], slot) if type_row is not None else None
+            _cell_text(rows[type_row], slot) if type_row is not None else None
         )
         if field_type is None:
             field_type = split_types.get(slot)
         if field_type is None and compressed_type_row is not None:
             field_type = _compressed_row_value(
-                block.rows[compressed_type_row], slot
+                rows[compressed_type_row], slot
             )
         default = (
-            _cell_text(block.rows[default_row], slot)
+            _cell_text(rows[default_row], slot)
             if default_row is not None
             else None
         )
         if default is None and compressed_default_row is not None:
             default = _compressed_row_value(
-                block.rows[compressed_default_row], slot
+                rows[compressed_default_row], slot
             )
         source_row = row_start
         source_column = slot
@@ -674,7 +696,7 @@ def _definition_fields(
         ):
             if (
                 source_candidate is not None
-                and candidate_column < len(block.rows[source_candidate])
+                and candidate_column < len(rows[source_candidate])
             ):
                 source_row = source_candidate
                 source_column = candidate_column
@@ -692,11 +714,12 @@ def _definition_fields(
 
 
 def _is_card_definition_continuation(block: TableBlock) -> bool:
-    if not block.rows or _is_variable_description_table(block):
+    rows = table_grid_rows(block)
+    if not rows or _is_variable_description_table(block):
         return False
     labels = {
         _normalized_row_label(row[0].text)
-        for row in block.rows
+        for row in rows
         if row and row[0].text.strip()
     }
     return bool(labels) and labels <= {
@@ -723,14 +746,15 @@ def _merge_card_continuation_fields(
             )
         )
         return
+    rows = table_grid_rows(block)
     variable_rows = _row_indices_by_label(
         block,
         0,
-        len(block.rows),
+        len(rows),
         {"Variable", "Variable Type", "Variable Type Default"},
     )
-    type_rows = _row_indices_by_label(block, 0, len(block.rows), {"Type"})
-    default_rows = _row_indices_by_label(block, 0, len(block.rows), {"Default"})
+    type_rows = _row_indices_by_label(block, 0, len(rows), {"Type"})
+    default_rows = _row_indices_by_label(block, 0, len(rows), {"Default"})
     variable_row = variable_rows[0] if variable_rows else None
     type_row = type_rows[0] if type_rows else None
     default_row = default_rows[0] if default_rows else None
@@ -738,15 +762,15 @@ def _merge_card_continuation_fields(
     for field in card.fields:
         slot = field.slot
         variable = (
-            _cell_text(block.rows[variable_row], slot)
+            _cell_text(rows[variable_row], slot)
             if variable_row is not None
             else None
         )
         field_type = (
-            _cell_text(block.rows[type_row], slot) if type_row is not None else None
+            _cell_text(rows[type_row], slot) if type_row is not None else None
         )
         default = (
-            _cell_text(block.rows[default_row], slot)
+            _cell_text(rows[default_row], slot)
             if default_row is not None
             else None
         )
@@ -858,7 +882,7 @@ def table_range_signature(
             ).strip()
             for cell in row
         )
-        for row in block.rows[table.row_start : table.row_end]
+        for row in table_grid_rows(block)[table.row_start : table.row_end]
     )
 
 
@@ -989,7 +1013,11 @@ def _record_confusable_variable_match(
         for issue in keyword.issues
     ):
         keyword.issues.append(
-            _issue("VARIABLE_IDENTIFIER_CONFUSABLE_MATCH", message)
+            _issue(
+                "VARIABLE_IDENTIFIER_CONFUSABLE_MATCH",
+                message,
+                severity="info",
+            )
         )
 
 
@@ -1015,6 +1043,37 @@ def _match_variable_family(
         ]
         if matches:
             return matches
+
+    axis_family = re.fullmatch(
+        r"(?P<prefix>[A-Za-z][A-Za-z_-]*?)(?:\[)?"
+        r"(?P<axes>[XYZ](?:\s*,\s*[XYZ])+)\]",
+        text.strip(),
+        re.IGNORECASE,
+    )
+    if axis_family is not None:
+        prefix = axis_family.group("prefix")
+        axes = re.findall(r"[XYZ]", axis_family.group("axes"), re.IGNORECASE)
+        matches = [
+            _match_variable(lookup, f"{prefix}{axis}") for axis in axes
+        ]
+        if all(matches):
+            return list(dict.fromkeys(matches))
+
+    if re.search(
+        r"\bi\s*(?:\^\s*\{?\s*th\s*\}?|th).*\bparameters?\b",
+        text,
+        re.IGNORECASE,
+    ):
+        numeric_families: dict[str, list[str]] = {}
+        for key, value in lookup.items():
+            match = re.fullmatch(r"([A-Z_]+)(\d+)", key)
+            if match is not None:
+                numeric_families.setdefault(match.group(1), []).append(value)
+        candidates = [
+            values for values in numeric_families.values() if len(values) >= 2
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
 
     explicit_tokens = [
         token.strip()
@@ -1100,6 +1159,20 @@ def _match_variable_table_heading(
     matched = _match_variable(lookup, text)
     if matched is not None:
         return matched
+    math_text = text.strip()
+    if math_text.startswith("$") and math_text.endswith("$"):
+        if not re.search(
+            r"(?:=|\+|/|\\(?:times|frac|left|right)\b)", math_text
+        ):
+            candidate = math_text.strip("$").strip().rstrip(",;:").strip()
+            candidate = re.sub(r"\\(?:mathrm|rm)\b", "", candidate)
+            candidate = candidate.replace("{", "").replace("}", "")
+            candidate = candidate.replace("_", "").replace("^", "")
+            candidate = re.sub(r"\s+", "", candidate)
+            if re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", candidate):
+                matched = _match_variable(lookup, candidate)
+                if matched is not None:
+                    return matched
     value = re.sub(r"\s*\([^)]*\)\s*$", "", text)
     value = re.sub(r"\s+(?:values?|attributes?)\s*$", "", value, flags=re.IGNORECASE)
     return _match_variable(lookup, value)
@@ -1113,6 +1186,12 @@ def _match_leading_variable(
     if not lines:
         return None
     first_line = lines[0]
+    if len(lines) > 1 and re.fullmatch(
+        r"VARIABLE\s*:?\s*", first_line, re.IGNORECASE
+    ):
+        matched = _match_variable_table_heading(lookup, lines[1])
+        if matched is not None:
+            return matched
     combined_header = re.fullmatch(
         r"VARIABLE\s+(.+)", first_line, re.IGNORECASE
     )
@@ -1138,6 +1217,67 @@ def _match_leading_variable(
     if len(lines) > 1:
         return _match_variable_table_heading(lookup, lines[0])
     return None
+
+
+def _match_leading_variable_group(
+    lookup: dict[str, str],
+    text: str,
+) -> tuple[str, list[str]] | None:
+    """Match catalog-backed comma/slash groups at the start of text lines."""
+
+    targets: list[str] = []
+    source_tokens: list[str] = []
+    for line_index, line in enumerate(text.splitlines()):
+        before_eq = re.split(
+            r"\b(?:EQ|NE|GE|GT|LE|LT)\.", line, maxsplit=1, flags=re.IGNORECASE
+        )[0]
+        value = before_eq.strip()
+        if line_index > 0 and value.startswith("/"):
+            value = value[1:].lstrip()
+        token_match = re.match(r"[A-Za-z][A-Za-z0-9_-]*", value)
+        if token_match is None:
+            continue
+        position = token_match.end()
+        token = token_match.group(0)
+        matched = _match_variable(lookup, token)
+        if matched is None:
+            continue
+        line_targets = [matched]
+        line_tokens = [token]
+        while True:
+            separator = re.match(r"\s*[,/]\s*", value[position:])
+            if separator is None:
+                break
+            next_start = position + separator.end()
+            next_token = re.match(
+                r"[A-Za-z][A-Za-z0-9_-]*", value[next_start:]
+            )
+            if next_token is None:
+                break
+            candidate = next_token.group(0)
+            candidate_match = _match_variable(lookup, candidate)
+            if candidate_match is None:
+                break
+            line_targets.append(candidate_match)
+            line_tokens.append(candidate)
+            position = next_start + next_token.end()
+        remainder = value[position:].lstrip()
+        has_group_shape = len(line_targets) > 1 or (
+            len(line_targets) == 1
+            and re.match(r"^(?:[,/]|$)", remainder) is not None
+        )
+        has_eq_boundary = bool(
+            re.search(r"\b(?:EQ|NE|GE|GT|LE|LT)\.", line, re.IGNORECASE)
+        )
+        if len(line_targets) == 1 and not (has_group_shape or has_eq_boundary):
+            continue
+        for source_token, target in zip(line_tokens, line_targets, strict=True):
+            if target not in targets:
+                targets.append(target)
+                source_tokens.append(source_token)
+    if len(targets) < 2:
+        return None
+    return ", ".join(source_tokens), targets
 
 
 def _is_description_header_row(row: list[Cell]) -> bool:
@@ -1235,11 +1375,12 @@ def _append_variable_table(
     has_generic_header = _is_variable_description_table(block)
     header_end = 1 if has_generic_header else 0
 
-    if not has_generic_header and block.rows and _is_description_header_row(
-        block.rows[0]
+    rows = table_grid_rows(block)
+    if not has_generic_header and rows and _is_description_header_row(
+        rows[0]
     ):
         heading = _match_variable_table_heading(
-            lookup, block.rows[0][0].text.strip()
+            lookup, rows[0][0].text.strip()
         )
         if heading is not None:
             description = _get_variable_description(keyword, heading)
@@ -1247,13 +1388,13 @@ def _append_variable_table(
                 VariableDescriptionTableIR(
                     source_block=sourced,
                     row_start=0,
-                    row_end=len(block.rows),
+                    row_end=len(rows),
                 )
             )
             return heading
 
-    if current_variable is None and header_end < len(block.rows):
-        first_row = block.rows[header_end]
+    if current_variable is None and header_end < len(rows):
+        first_row = rows[header_end]
         first_label = first_row[0].text.strip() if first_row else ""
         if (
             _is_variable_continuation_label(first_label)
@@ -1295,8 +1436,8 @@ def _append_variable_table(
         active_start = None
         active_continuation_of = None
 
-    for row_index in range(header_end, len(block.rows)):
-        row = block.rows[row_index]
+    for row_index in range(header_end, len(rows)):
+        row = rows[row_index]
         label = row[0].text.strip() if row else ""
         if label:
             matched_variable = _match_variable_table_heading(lookup, label)
@@ -1382,7 +1523,7 @@ def _append_variable_table(
         elif active_start is None:
             active_start = row_index
             active_continuation_of = previous_source
-    flush(len(block.rows))
+    flush(len(rows))
     return active_variable
 
 
@@ -1528,7 +1669,7 @@ def _classify_strong_semantics(keyword: KeywordIR) -> None:
                     sourced,
                     role="summary",
                     row_start=0,
-                    row_end=len(block.rows),
+                    row_end=len(table_grid_rows(block)),
                 )
                 _merge_summary_fields(card)
                 pending_card_label = None
@@ -1557,7 +1698,7 @@ def _classify_strong_semantics(keyword: KeywordIR) -> None:
                     sourced,
                     role="definition",
                     row_start=0,
-                    row_end=len(block.rows),
+                    row_end=len(table_grid_rows(block)),
                     continuation_of=previous_source,
                 )
                 _merge_card_continuation_fields(card, sourced, keyword.issues)
@@ -1566,6 +1707,20 @@ def _classify_strong_semantics(keyword: KeywordIR) -> None:
 
         if state == "cards" and text:
             lookup = _variable_lookup(keyword)
+            grouped = _match_leading_variable_group(lookup, text)
+            if grouped is not None:
+                group_label, group_variables = grouped
+                state = "variables"
+                variable_region = True
+                pending_card_label = None
+                last_definition_card_label = None
+                current_variable = group_label
+                _get_variable_description(
+                    keyword,
+                    group_label,
+                    applies_to=group_variables,
+                ).blocks.append(sourced)
+                continue
             matched_variable = _match_variable_table_heading(lookup, text)
             if matched_variable is None:
                 matched_variable = _match_leading_variable(lookup, text)
@@ -1622,9 +1777,23 @@ def _classify_strong_semantics(keyword: KeywordIR) -> None:
             lookup = _variable_lookup(keyword)
             matched_variable = None
             if text:
+                grouped = _match_leading_variable_group(lookup, text)
+                if grouped is not None:
+                    group_label, group_variables = grouped
+                    current_variable = group_label
+                    _get_variable_description(
+                        keyword,
+                        group_label,
+                        applies_to=group_variables,
+                    ).blocks.append(sourced)
+                    continue
                 matched_variable = _match_variable_table_heading(lookup, text)
                 if matched_variable is None:
                     matched_variable = _match_leading_variable(lookup, text)
+            elif isinstance(block, MathBlock):
+                matched_variable = _match_variable_table_heading(
+                    lookup, block.text
+                )
             if text:
                 _record_confusable_variable_match(
                     keyword, text, matched_variable

@@ -8,7 +8,12 @@ from pathlib import Path
 
 from lsdyna_manual.parser.adapters.base import PageAdapter
 from lsdyna_manual.parser.ingest import sha256_of
-from lsdyna_manual.parser.page_ir import SCHEMA_VERSION, save_page_ir, validate_page_ir
+from lsdyna_manual.parser.page_ir import (
+    SCHEMA_VERSION,
+    ParseIssue,
+    save_page_ir,
+    validate_page_ir,
+)
 from lsdyna_manual.parser.parse_plan import ParsePlan
 from lsdyna_manual.parser.parse_state import (
     BatchParseState,
@@ -53,6 +58,38 @@ class DocumentParser:
     def _emit(self, event: ParseProgressEvent) -> None:
         if self.on_progress is not None:
             self.on_progress(event)
+
+    @staticmethod
+    def _source_page_is_blank(reader, pdf_page: int) -> bool:
+        """Return true only when a PDF page has no visible content operators."""
+
+        from pypdf.generic import ContentStream
+
+        page = reader.pages[pdf_page - 1]
+        if page.get("/Annots"):
+            return False
+        contents = page.get_contents()
+        if contents is None:
+            return True
+        visible_operators = {
+            b"Tj",
+            b"TJ",
+            b"'",
+            b'"',
+            b"Do",
+            b"S",
+            b"s",
+            b"f",
+            b"F",
+            b"f*",
+            b"B",
+            b"B*",
+            b"b",
+            b"b*",
+            b"sh",
+        }
+        stream = ContentStream(contents, reader)
+        return not any(operator in visible_operators for _, operator in stream.operations)
 
     @staticmethod
     def _sections_for_pages(
@@ -224,7 +261,12 @@ class DocumentParser:
                     source_sha256=source_sha256,
                     semantic_config_hash=semantic_config_hash,
                 )
-            resume_job_id = batch_state.job_id
+            force_resubmit = any(
+                (state := self.state_store.get(document_id, pdf_page)) is not None
+                and state.status == "parse_empty"
+                for pdf_page in pending_pages
+            )
+            resume_job_id = None if force_resubmit else batch_state.job_id
             if resume_job_id:
                 batch_state.status = "resuming"
             else:
@@ -440,6 +482,10 @@ class DocumentParser:
         semantic_config_hash = self.provider.semantic_identity()
         adapter_identity = adapter.identity()
 
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(source_pdf_path))
+
         for entry in plan.entries:
             if entry.document_id != document_id:
                 continue
@@ -499,6 +545,42 @@ class DocumentParser:
                     manual_page=entry.manual_page,
                 )
                 page_ir.document_id = document_id
+                if not page_ir.blocks:
+                    source_is_blank = self._source_page_is_blank(
+                        reader, entry.pdf_page
+                    )
+                    page_ir.issues = [
+                        issue
+                        for issue in page_ir.issues
+                        if issue.code != "READING_ORDER_AMBIGUOUS"
+                    ]
+                    if source_is_blank:
+                        page_ir.issues.append(
+                            ParseIssue(
+                                severity="info",
+                                code="SOURCE_BLANK_PAGE",
+                                message=(
+                                    "source PDF page has no visible content "
+                                    "operators; empty PageIR is expected"
+                                ),
+                            )
+                        )
+                    else:
+                        state.empty_parse_attempts += 1
+                        final_attempt = state.empty_parse_attempts >= 2
+                        page_ir.issues.append(
+                            ParseIssue(
+                                severity="error" if final_attempt else "warning",
+                                code="PAGE_PARSE_EMPTY",
+                                message=(
+                                    "non-blank source PDF page produced no PageIR "
+                                    "blocks after retry"
+                                    if final_attempt
+                                    else "non-blank source PDF page produced no "
+                                    "PageIR blocks; one fresh provider retry is required"
+                                ),
+                            )
+                        )
                 validation_issues = validate_page_ir(
                     page_ir,
                     expected_document_id=document_id,
@@ -526,7 +608,16 @@ class DocumentParser:
                 )
                 continue
 
-            state.status = "done"
+            parse_empty = any(
+                issue.code == "PAGE_PARSE_EMPTY" for issue in page_ir.issues
+            )
+            state.status = (
+                "failed"
+                if parse_empty and state.empty_parse_attempts >= 2
+                else "parse_empty"
+                if parse_empty
+                else "done"
+            )
             state.source_sha256 = source_sha256
             state.source_file = source_file
             state.semantic_config_hash = semantic_config_hash
@@ -540,12 +631,16 @@ class DocumentParser:
                     document_id=document_id,
                     volume=entry_volume,
                     pdf_page=entry.pdf_page,
-                    status="done",
+                    status=state.status,
                 )
             )
             self._emit(
                 ParseProgressEvent(
-                    phase="pageir_done",
+                    phase=(
+                        "pageir_done"
+                        if state.status == "done"
+                        else state.status
+                    ),
                     document_id=document_id,
                     pdf_pages=(entry.pdf_page,),
                     sections=entry.candidate_sections,

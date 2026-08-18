@@ -720,7 +720,20 @@ def _build_sections(
 
     for position, spec in enumerate(located):
         start = starts[spec.section_id]
-        if spec.kind == "keyword" or spec.parent_section_id is not None:
+        if spec.kind == "theory":
+            current_depth = len((spec.section_number or spec.section_id).split("."))
+            end = content_end
+            for next_spec in located[position + 1 :]:
+                if next_spec.kind != "theory":
+                    end = starts[next_spec.section_id]
+                    break
+                next_depth = len(
+                    (next_spec.section_number or next_spec.section_id).split(".")
+                )
+                if next_depth <= current_depth:
+                    end = starts[next_spec.section_id]
+                    break
+        elif spec.kind == "keyword" or spec.parent_section_id is not None:
             # Flat boundary: the next selected TOC entry, except that a
             # document root is bounded by the next top-level entry (below).
             if position + 1 < len(located):

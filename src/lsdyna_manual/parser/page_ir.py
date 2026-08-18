@@ -1,9 +1,8 @@
-"""Canonical PageIR v0.1 data model.
+"""Canonical PageIR v0.2 data model.
 
-This module deliberately implements only the schema described in
-``docs/parser-interface.md``. The model is stable for the first
-real-page validation round, but it is not final: fields may be added or
-changed only when supported by observations from real Manual pages.
+PageIR v0.2 preserves the v0.1 page and block identities while representing
+HTML table row and column spans as logical cells. Existing v0.1 artifacts are
+still readable; newly saved artifacts use v0.2.
 """
 
 from __future__ import annotations
@@ -13,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 BBox = tuple[float, float, float, float] | None
-SCHEMA_VERSION = "0.1"
+SCHEMA_VERSION = "0.2"
+SUPPORTED_SCHEMA_VERSIONS = {"0.1", "0.2"}
 BLOCK_TYPES = {
     "text",
     "table",
@@ -107,6 +107,8 @@ class Cell:
     text: str
     row: int
     column: int
+    rowspan: int = 1
+    colspan: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -125,6 +127,52 @@ class TableBlock(Block):
         data = super().to_dict()
         data["rows"] = [[cell.to_dict() for cell in row] for row in self.rows]
         return data
+
+
+def table_row_widths(block: TableBlock) -> list[int]:
+    """Return each row's occupied width, including logical cell spans."""
+
+    widths = [0 for _ in block.rows]
+    for row_index, row in enumerate(block.rows):
+        for cell in row:
+            if cell.row != row_index or cell.column < 0:
+                continue
+            colspan = max(1, cell.colspan)
+            width = cell.column + colspan
+            for covered_row in range(cell.row, min(cell.row + max(1, cell.rowspan), len(widths))):
+                widths[covered_row] = max(widths[covered_row], width)
+    return widths
+
+
+def table_grid_rows(block: TableBlock) -> list[list[Cell]]:
+    """Project logical cells to a rectangular grid without copying text.
+
+    The anchor cell remains at its original coordinate. Covered positions are
+    represented by empty synthetic cells so existing row-oriented semantic
+    code can address the visual grid deterministically. The canonical PageIR
+    still serializes only the logical source cells.
+    """
+
+    if not block.rows:
+        return []
+    if not any(
+        cell.rowspan != 1 or cell.colspan != 1
+        for row in block.rows
+        for cell in row
+    ):
+        return [list(row) for row in block.rows]
+    widths = table_row_widths(block)
+    width = max(widths, default=0)
+    grid = [
+        [Cell(text="", row=row_index, column=column) for column in range(width)]
+        for row_index in range(len(block.rows))
+    ]
+    for row_index, row in enumerate(block.rows):
+        for cell in row:
+            if cell.row != row_index or cell.column < 0 or cell.column >= width:
+                continue
+            grid[row_index][cell.column] = cell
+    return grid
 
 
 @dataclass
@@ -147,6 +195,9 @@ class PageIR:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PageIR":
+        schema_version = str(data.get("schema_version", "0.1"))
+        if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
+            raise ValueError(f"unsupported PageIR schema version: {schema_version}")
         return PageIR(
             document_id=data.get("document_id"),
             pdf_page=int(data["pdf_page"]),
@@ -187,6 +238,8 @@ def block_from_dict(data: dict[str, Any]) -> Block:
                     text=cell["text"],
                     row=int(cell["row"]),
                     column=int(cell["column"]),
+                    rowspan=int(cell.get("rowspan", 1)),
+                    colspan=int(cell.get("colspan", 1)),
                 )
                 for cell in row
             ]
@@ -217,7 +270,7 @@ def validate_page_ir(
     expected_document_id: str | None = None,
     expected_pdf_page: int | None = None,
 ) -> list[ParseIssue]:
-    """Validate PageIR shape without adding new schema fields.
+    """Validate PageIR identity and table span invariants.
 
     This function checks identity and structural invariants only. It is
     intentionally small; the first real-page review decides whether the
@@ -279,6 +332,52 @@ def validate_page_ir(
                                 severity="error",
                                 code="PAGEIR_INVALID_TABLE_COLUMN",
                                 message=f"negative table column: {cell.column}",
+                            )
+                        )
+                    if cell.rowspan <= 0 or cell.colspan <= 0:
+                        issues.append(
+                            ParseIssue(
+                                severity="error",
+                                code="PAGEIR_INVALID_TABLE_SPAN",
+                                message=(
+                                    "table cell rowspan and colspan must be positive: "
+                                    f"{cell.rowspan}x{cell.colspan}"
+                                ),
+                            )
+                        )
+
+            occupied: dict[tuple[int, int], Cell] = {}
+            for row_index, row in enumerate(block.rows):
+                for cell in row:
+                    if cell.row != row_index or cell.rowspan <= 0 or cell.colspan <= 0:
+                        continue
+                    for covered_row in range(cell.row, cell.row + cell.rowspan):
+                        for covered_column in range(
+                            cell.column, cell.column + cell.colspan
+                        ):
+                            key = (covered_row, covered_column)
+                            previous = occupied.get(key)
+                            if previous is not None and previous is not cell:
+                                issues.append(
+                                    ParseIssue(
+                                        severity="error",
+                                        code="PAGEIR_TABLE_SPAN_OVERLAP",
+                                        message=(
+                                            "table cell spans overlap at "
+                                            f"row {covered_row}, column {covered_column}"
+                                        ),
+                                    )
+                                )
+                            occupied[key] = cell
+                    if cell.row + cell.rowspan > len(block.rows):
+                        issues.append(
+                            ParseIssue(
+                                severity="error",
+                                code="PAGEIR_TABLE_SPAN_OUT_OF_BOUNDS",
+                                message=(
+                                    "table cell rowspan exceeds table height at "
+                                    f"row {cell.row}"
+                                ),
                             )
                         )
 

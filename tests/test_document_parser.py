@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, NameObject
 import pytest
 
 from lsdyna_manual.parser.adapters.base import PageAdapter
@@ -77,6 +78,14 @@ class FakeAdapter(PageAdapter):
         )
 
 
+class EmptyAdapter(PageAdapter):
+    def identity(self):
+        return "empty-adapter:1"
+
+    def adapt_page(self, raw_page_json_path, *, pdf_page, manual_page):
+        return PageIR(pdf_page=pdf_page, manual_page=manual_page, blocks=[])
+
+
 def _source_pdf(tmp_path, pages=3):
     writer = PdfWriter()
     for _ in range(pages):
@@ -85,6 +94,107 @@ def _source_pdf(tmp_path, pages=3):
     with open(path, "wb") as fh:
         writer.write(fh)
     return path
+
+
+def _text_source_pdf(tmp_path):
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT /F1 12 Tf 72 720 Td (visible) Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    path = tmp_path / "text-source.pdf"
+    with open(path, "wb") as fh:
+        writer.write(fh)
+    return path
+
+
+def test_source_page_blank_detection_distinguishes_content(tmp_path):
+    from pypdf import PdfReader
+
+    blank = PdfReader(str(_source_pdf(tmp_path, 1)))
+    visible = PdfReader(str(_text_source_pdf(tmp_path)))
+
+    assert DocumentParser._source_page_is_blank(blank, 1)
+    assert not DocumentParser._source_page_is_blank(visible, 1)
+
+
+def test_empty_pageir_is_classified_as_source_blank(tmp_path):
+    source = _source_pdf(tmp_path, 1)
+    section = Section(
+        section_id="A",
+        keyword_id="A",
+        name="*A",
+        volume=2,
+        kind="keyword",
+        parent_section_id=None,
+        pdf_pages=[1],
+        manual_pages=[None],
+        document_id="keyword-volume-2",
+    )
+    plan = build_parse_plan(
+        [section],
+        {"keyword-volume-2": [PageMapEntry(pdf_page=1, manual_page=None, evidence=None)]},
+        batch_size=1,
+    )
+    parser = DocumentParser(
+        FakeProvider(),
+        state_store=ParseStateStore(tmp_path / "state.json"),
+        raw_root=tmp_path / "raw",
+        pageir_root=tmp_path / "pageir",
+    )
+    parser.parse_raw_for_document(plan, source, document_id="keyword-volume-2")
+    result = parser.build_pageir_for_document(
+        plan,
+        EmptyAdapter(),
+        document_id="keyword-volume-2",
+        source_pdf_path=source,
+    )
+
+    assert result[0].status == "done"
+    page_ir = PageIR.from_dict(
+        json.loads(
+            (tmp_path / "pageir" / "keyword-volume-2" / "page_000001.json").read_text()
+        )
+    )
+    assert [issue.code for issue in page_ir.issues] == ["SOURCE_BLANK_PAGE"]
+
+
+def test_nonblank_empty_pageir_is_retryable_once(tmp_path):
+    source = _text_source_pdf(tmp_path)
+    section = Section(
+        section_id="A",
+        keyword_id="A",
+        name="*A",
+        volume=2,
+        kind="keyword",
+        parent_section_id=None,
+        pdf_pages=[1],
+        manual_pages=[None],
+        document_id="keyword-volume-2",
+    )
+    plan = build_parse_plan(
+        [section],
+        {"keyword-volume-2": [PageMapEntry(pdf_page=1, manual_page=None, evidence=None)]},
+        batch_size=1,
+    )
+    state_store = ParseStateStore(tmp_path / "state.json")
+    parser = DocumentParser(
+        FakeProvider(), state_store=state_store, raw_root=tmp_path / "raw", pageir_root=tmp_path / "pageir"
+    )
+    parser.parse_raw_for_document(plan, source, document_id="keyword-volume-2")
+
+    first = parser.build_pageir_for_document(
+        plan, EmptyAdapter(), document_id="keyword-volume-2", source_pdf_path=source
+    )
+    assert first[0].status == "parse_empty"
+    assert state_store.get("keyword-volume-2", 1).empty_parse_attempts == 1
+
+    parser.parse_raw_for_document(plan, source, document_id="keyword-volume-2")
+    second = parser.build_pageir_for_document(
+        plan, EmptyAdapter(), document_id="keyword-volume-2", source_pdf_path=source
+    )
+    assert second[0].status == "failed"
+    assert state_store.get("keyword-volume-2", 1).empty_parse_attempts == 2
 
 
 def test_document_parser_raw_and_pageir_with_resume(tmp_path):
@@ -146,7 +256,7 @@ def test_document_parser_raw_and_pageir_with_resume(tmp_path):
         source_sha256=state_store.get("keyword-volume-2", 3).source_sha256,
         semantic_config_hash="fake-provider:fake-model",
         adapter_identity="fake-adapter:1",
-        pageir_schema_version="0.1",
+        pageir_schema_version="0.2",
     )
 
     # A completed PageIR still represents a valid raw cache entry.

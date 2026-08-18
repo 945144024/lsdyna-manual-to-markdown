@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from lsdyna_manual.parser.page_ir import (
     MathBlock,
     TableBlock,
     TextBlock,
+    table_grid_rows,
 )
 from lsdyna_manual.reconstruction.keyword_ir import (
     CardTableIR,
@@ -25,11 +27,12 @@ from lsdyna_manual.reconstruction.keyword_ir import (
     table_range_signature,
 )
 from lsdyna_manual.reconstruction.section_ir import SectionIR
+from lsdyna_manual.reconstruction.theory_ir import TheoryIR
 
 
 @dataclass(frozen=True)
 class RenderedSection:
-    section: KeywordIR
+    section: KeywordIR | TheoryIR
     markdown_path: Path | None
     manifest_record: dict
 
@@ -53,6 +56,11 @@ def _relative_path(section: KeywordIR) -> Path:
         / _family(section)
         / f"{keyword_id}.md"
     )
+
+
+def _theory_relative_path(section: TheoryIR) -> Path:
+    section_id = _safe_component(section.section_id, fallback="section")
+    return Path("markdown") / "theory" / f"{section_id}.md"
 
 
 def _source_pages(section: KeywordIR) -> list[dict[str, int | str | None]]:
@@ -81,6 +89,26 @@ def _front_matter(section: KeywordIR, release: str) -> str:
     return f"---\n{rendered}\n---"
 
 
+def _theory_front_matter(section: TheoryIR, release: str) -> str:
+    metadata = {
+        "document_id": section.document_id,
+        "manual_type": section.manual_type,
+        "section_id": section.section_id,
+        "section_number": section.section_number,
+        "title": section.title,
+        "parent_section_id": section.parent_section_id,
+        "manual_release": release,
+        "source_pages": [page.to_dict() for page in section.source_pages],
+    }
+    rendered = yaml.safe_dump(
+        metadata,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+    ).rstrip()
+    return f"---\n{rendered}\n---"
+
+
 def _escape_cell(value: str) -> str:
     normalized = normalize_literal_cell_newlines(value)
     return " <br> ".join(
@@ -91,13 +119,14 @@ def _escape_cell(value: str) -> str:
 
 
 def _render_table(block: TableBlock) -> list[str]:
-    if not block.rows:
+    grid_rows = table_grid_rows(block)
+    if not grid_rows:
         return ["> [Table content unavailable.]", ""]
-    width = max(len(row) for row in block.rows)
+    width = max(len(row) for row in grid_rows)
     rows = [
         [_escape_cell(cell.text) for cell in row]
         + [""] * (width - len(row))
-        for row in block.rows
+        for row in grid_rows
     ]
     lines = ["| " + " | ".join(rows[0]) + " |"]
     lines.append("| " + " | ".join("---" for _ in range(width)) + " |")
@@ -170,7 +199,7 @@ def _render_variable_table(
 ) -> list[str]:
     """Render a variable description row range with explicit column labels."""
 
-    return _render_variable_rows(block.rows[row_start:row_end])
+    return _render_variable_rows(table_grid_rows(block)[row_start:row_end])
 
 
 def _render_variable_rows(rows: list[list]) -> list[str]:
@@ -207,7 +236,7 @@ def _group_table_parts(
         block = table.source_block.block
         if not isinstance(block, TableBlock):
             continue
-        rows = block.rows[table.row_start:table.row_end]
+        rows = table_grid_rows(block)[table.row_start:table.row_end]
         continuation_key = (
             _source_ref_key(table.continuation_of)
             if table.continuation_of is not None
@@ -409,6 +438,7 @@ def _render_semantic_body(section: KeywordIR) -> list[str] | None:
                     consumed.add(key)
             elif isinstance(sourced.block, TableBlock):
                 consumed.add(key)
+                source_rows = table_grid_rows(sourced.block)
                 known_ranges = [
                     (table.row_start, table.row_end)
                     for description in section.variable_descriptions
@@ -417,10 +447,10 @@ def _render_semantic_body(section: KeywordIR) -> list[str] | None:
                 ]
                 header_end = 0
                 if (
-                    sourced.block.rows
-                    and len(sourced.block.rows[0]) >= 2
-                    and sourced.block.rows[0][0].text.strip().casefold() == "variable"
-                    and sourced.block.rows[0][1].text.strip().casefold()
+                    source_rows
+                    and len(source_rows[0]) >= 2
+                    and source_rows[0][0].text.strip().casefold() == "variable"
+                    and source_rows[0][1].text.strip().casefold()
                     == "description"
                 ):
                     header_end = 1
@@ -430,8 +460,8 @@ def _render_semantic_body(section: KeywordIR) -> list[str] | None:
                     for row_index in range(start, end)
                 }
                 unknown_start: int | None = None
-                for row_index in range(header_end, len(sourced.block.rows) + 1):
-                    is_unknown = row_index < len(sourced.block.rows) and row_index not in covered
+                for row_index in range(header_end, len(source_rows) + 1):
+                    is_unknown = row_index < len(source_rows) and row_index not in covered
                     if is_unknown and unknown_start is None:
                         unknown_start = row_index
                     elif not is_unknown and unknown_start is not None:
@@ -443,7 +473,7 @@ def _render_semantic_body(section: KeywordIR) -> list[str] | None:
                             )
                         )
                         unknown_start = None
-                if header_end == 0 and not known_ranges and sourced.block.rows:
+                if header_end == 0 and not known_ranges and source_rows:
                     lines.extend(_render_table(sourced.block))
 
     if section.remarks_blocks:
@@ -537,4 +567,84 @@ def render_keywords(
     return [
         renderer.render(keyword, corpus_root=corpus_root, release=release)
         for keyword in keywords
+    ]
+
+
+def _normalize_title(text: str) -> str:
+    value = unicodedata.normalize("NFKD", text)
+    value = value.replace("—", "-").replace("–", "-")
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _theory_title_block_count(section: TheoryIR) -> int:
+    """Count title-anchor blocks represented by the generated H1."""
+
+    if not section.content_blocks:
+        return 0
+    number = _normalize_title(section.section_number or section.section_id)
+    title = _normalize_title(section.title)
+    first = section.content_blocks[0].block
+    if not isinstance(first, TextBlock):
+        return 0
+    first_text = _normalize_title(first.text)
+    if first_text == f"{number} {title}":
+        return 1
+    if first_text == number and len(section.content_blocks) > 1:
+        second = section.content_blocks[1].block
+        if isinstance(second, TextBlock):
+            second_text = _normalize_title(second.text)
+            if second_text == title:
+                return 2
+    return 0
+
+
+class TheoryMarkdownRenderer:
+    """Render TheoryIR as a source-preserving chapter Markdown file."""
+
+    def render(
+        self,
+        section: TheoryIR,
+        *,
+        corpus_root: Path,
+        release: str,
+    ) -> RenderedSection:
+        relative_path = _theory_relative_path(section)
+        manifest = {
+            "document_id": section.document_id,
+            "manual_type": section.manual_type,
+            "section_id": section.section_id,
+            "section_number": section.section_number,
+            "title": section.title,
+            "parent_section_id": section.parent_section_id,
+            "source_pages": [page.to_dict() for page in section.source_pages],
+            "markdown_path": str(relative_path) if section.content_blocks else None,
+            "status": section.status,
+        }
+        if not section.content_blocks:
+            return RenderedSection(section, None, manifest)
+
+        target = corpus_root / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        heading = " ".join(
+            value
+            for value in (section.section_number, section.title)
+            if value
+        )
+        body = [_theory_front_matter(section, release), "", f"# {heading}", ""]
+        title_blocks = _theory_title_block_count(section)
+        body.extend(_render_blocks(section.content_blocks[title_blocks:]))
+        target.write_text("\n".join(body).rstrip() + "\n", encoding="utf-8")
+        return RenderedSection(section, target, manifest)
+
+
+def render_theory(
+    theories: list[TheoryIR],
+    *,
+    corpus_root: Path,
+    release: str,
+) -> list[RenderedSection]:
+    renderer = TheoryMarkdownRenderer()
+    return [
+        renderer.render(theory, corpus_root=corpus_root, release=release)
+        for theory in theories
     ]

@@ -12,6 +12,7 @@ from lsdyna_manual.parser.page_ir import (
     HeaderBlock,
     MathBlock,
     PageIR,
+    ParseIssue,
     TableBlock,
     TextBlock,
     save_page_ir,
@@ -23,7 +24,8 @@ from lsdyna_manual.reconstruction.keyword_ir import (
     validate_keyword_ir,
 )
 from lsdyna_manual.reconstruction.section_ir import assemble_sections
-from lsdyna_manual.markdown.renderer import render_sections
+from lsdyna_manual.reconstruction.theory_ir import reconstruct_theory
+from lsdyna_manual.markdown.renderer import render_sections, render_theory
 
 
 def _section(pages=(1, 2)):
@@ -63,6 +65,28 @@ def test_assemble_sections_preserves_source_range_and_missing_pages():
     assert any(issue.code == "SECTION_PAGEIR_MISSING" for issue in result.issues)
 
 
+def test_source_blank_page_does_not_create_empty_content_warning():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[],
+        issues=[
+            ParseIssue(
+                severity="info",
+                code="SOURCE_BLANK_PAGE",
+                message="blank",
+            )
+        ],
+    )
+    result = assemble_sections(
+        [_section((1,))], {("keyword-volume-2", 1): page}
+    )[0]
+
+    assert result.status == "success"
+    assert not any(issue.code == "SECTION_CONTENT_EMPTY" for issue in result.issues)
+
+
 def test_assemble_sections_marks_shared_boundary_pages():
     first = _section((1,))
     second = Section(
@@ -93,6 +117,110 @@ def test_assemble_sections_marks_shared_boundary_pages():
     assert all(
         any(issue.code == "SECTION_SHARED_BOUNDARY_PAGE" for issue in result.issues)
         for result in results
+    )
+
+
+def test_assemble_sections_treats_theory_parent_overlap_as_informational():
+    parent = Section(
+        section_id="35",
+        keyword_id=None,
+        name="Parent",
+        volume=None,
+        kind="theory",
+        parent_section_id=None,
+        pdf_pages=[1],
+        manual_pages=["35-1"],
+        document_id="theory",
+        section_number="35",
+    )
+    child = Section(
+        section_id="35.1",
+        keyword_id=None,
+        name="Child",
+        volume=None,
+        kind="theory",
+        parent_section_id="35",
+        pdf_pages=[1],
+        manual_pages=["35-1"],
+        document_id="theory",
+        section_number="35.1",
+    )
+    page = PageIR(
+        document_id="theory",
+        pdf_page=1,
+        manual_page="35-1",
+        blocks=[TextBlock(text="35 Parent"), TextBlock(text="35.1 Child")],
+    )
+
+    results = assemble_sections([parent, child], {("theory", 1): page})
+
+    assert all(result.status == "success" for result in results)
+    assert all(
+        any(
+            issue.code == "THEORY_HIERARCHICAL_PAGE_OVERLAP"
+            and issue.severity == "info"
+            for issue in result.issues
+        )
+        for result in results
+    )
+
+
+def test_theory_ir_assigns_parent_and_siblings_by_title_anchors():
+    sections = [
+        Section("35", None, "Parent", None, "theory", None, [1, 2], ["35-1", "35-2"], "theory", "35"),
+        Section("35.1", None, "First", None, "theory", "35", [1, 2], ["35-1", "35-2"], "theory", "35.1"),
+        Section("35.2", None, "Second", None, "theory", "35", [2], ["35-2"], "theory", "35.2"),
+    ]
+    pages = {
+        ("theory", 1): PageIR(
+            document_id="theory",
+            pdf_page=1,
+            manual_page="35-1",
+            blocks=[
+                HeaderBlock(text="Theory Manual"),
+                TextBlock(text="35"),
+                TextBlock(text="Parent"),
+                TextBlock(text="Parent introduction"),
+                TextBlock(text="35.1 First"),
+                TextBlock(text="First body"),
+                FooterBlock(text="35-1"),
+            ],
+        ),
+        ("theory", 2): PageIR(
+            document_id="theory",
+            pdf_page=2,
+            manual_page="35-2",
+            blocks=[
+                TextBlock(text="First continuation"),
+                TextBlock(text="35.2 Second"),
+                TextBlock(text="Second body"),
+            ],
+        ),
+    }
+
+    theories = reconstruct_theory(assemble_sections(sections, pages))
+    by_id = {theory.section_id: theory for theory in theories}
+
+    assert [block.block.text for block in by_id["35"].content_blocks] == [
+        "35",
+        "Parent",
+        "Parent introduction",
+    ]
+    assert [block.block.text for block in by_id["35.1"].content_blocks] == [
+        "35.1 First",
+        "First body",
+        "First continuation",
+    ]
+    assert [block.block.text for block in by_id["35.2"].content_blocks] == [
+        "35.2 Second",
+        "Second body",
+    ]
+    owned = [source for theory in theories for source in theory.owned_sources]
+    assert len(owned) == len(set(owned))
+    assert all(theory.status == "success" for theory in theories)
+    assert all(
+        not any(issue.code == "SECTION_SHARED_BOUNDARY_PAGE" for issue in theory.issues)
+        for theory in theories
     )
 
 
@@ -462,6 +590,59 @@ def test_card_fields_preserve_empty_slots_and_short_ocr_rows():
         "column": 8,
     }
     assert keyword.variable_catalog == ["MID", "RO"]
+
+
+def test_reconstruction_uses_span_projection_for_card_and_variable_tables():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    [
+                        Cell(text="Card 1", row=0, column=0),
+                        Cell(text="1", row=0, column=1),
+                        Cell(text="2", row=0, column=2),
+                    ],
+                    [
+                        Cell(text="Variable", row=1, column=0),
+                        Cell(text="A", row=1, column=1, colspan=2),
+                    ],
+                    [
+                        Cell(text="Type", row=2, column=0),
+                        Cell(text="F", row=2, column=1, colspan=2),
+                    ],
+                ]
+            ),
+            TextBlock(text="VARIABLE"),
+            TableBlock(
+                rows=[
+                    [
+                        Cell(text="VARIABLE", row=0, column=0),
+                        Cell(text="DESCRIPTION", row=0, column=1),
+                    ],
+                    [
+                        Cell(text="A", row=1, column=0, rowspan=2),
+                        Cell(text="first", row=1, column=1),
+                    ],
+                    [Cell(text="continued", row=2, column=1)],
+                ]
+            ),
+        ],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert [(field.variable, field.field_type) for field in keyword.cards[0].fields] == [
+        ("A", "F"),
+        (None, None),
+    ]
+    assert keyword.variable_descriptions[0].variable == "A"
+    assert keyword.variable_descriptions[0].tables[0].row_end == 3
 
 
 def test_card_fields_recover_merged_labels_and_compressed_rows():
@@ -845,6 +1026,34 @@ def test_variable_description_families_map_to_concrete_catalog_slots(tmp_path):
     assert "Applies to: `A10`, `A11`, `A20`" in markdown
 
 
+def test_indexed_parameter_phrase_maps_unique_numeric_card_family():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1", "2", "3"),
+                    _row(1, "Variable", "P1", "P2", "P3"),
+                ]
+            ),
+            TextBlock(text="VARIABLE"),
+            TextBlock(text="DESCRIPTION"),
+            TextBlock(text="$ i^{th} $ property parameter"),
+        ],
+    )
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    description = keyword.variable_descriptions[0]
+    assert description.applies_to == ["P1", "P2", "P3"]
+    assert description.blocks[0].block.text == "$ i^{th} $ property parameter"
+    assert not validate_keyword_ir(keyword)
+
+
 def test_variable_descriptions_map_indexed_and_unique_confusable_names():
     page = PageIR(
         document_id="keyword-volume-2",
@@ -880,10 +1089,159 @@ def test_variable_descriptions_map_indexed_and_unique_confusable_names():
         issue.code == "VARIABLE_IDENTIFIER_CONFUSABLE_MATCH"
         for issue in keyword.issues
     ) == 2
+    assert all(
+        issue.severity == "info"
+        for issue in keyword.issues
+        if issue.code == "VARIABLE_IDENTIFIER_CONFUSABLE_MATCH"
+    )
     assert not any(
         issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
         for issue in keyword.issues
     )
+
+
+def test_unlabeled_value_card_recovers_variable_group():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*INITIAL_INTERNAL_DOF_SOLID"),
+            TableBlock(rows=[_row(0, "Card 1", "1"), _row(1, "Variable", "LID")]),
+            TextBlock(text="Value Cards. Include one card for each value."),
+            TableBlock(
+                rows=[
+                    _row(0, "Card", "1", "2", "3"),
+                    _row(1, "Variable", "VALX", "VALY", "VALZ"),
+                    _row(2, "Type", "F", "F", "F"),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "VALX", "x component"),
+                    _row(2, "VALY", "y component"),
+                    _row(3, "VALZ", "z component"),
+                ]
+            ),
+        ],
+    )
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert keyword.variable_catalog == ["LID", "VALX", "VALY", "VALZ"]
+    assert {card.label for card in keyword.cards} == {"Card 1", "Card"}
+    assert not any(
+        issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
+        for issue in keyword.issues
+    )
+    assert not validate_keyword_ir(keyword)
+
+
+def test_variable_axis_family_accepts_ocr_bracket_damage():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*ICFD_CONTROL_OUTPUT_SUBDOM"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1", "2", "3", "4"),
+                    _row(1, "Variable", "PMINX", "PMINY", "PMINZ", "RADIUS"),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "PMINX, Y, Z]", "minimum coordinates"),
+                    _row(2, "RADIUS", "sphere radius"),
+                ]
+            ),
+        ],
+    )
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+    descriptions = {item.variable: item for item in keyword.variable_descriptions}
+
+    assert descriptions["PMINX, Y, Z]"].applies_to == ["PMINX", "PMINY", "PMINZ"]
+    assert descriptions["RADIUS"].applies_to == ["RADIUS"]
+    assert not any(
+        issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
+        for issue in keyword.issues
+    )
+
+
+def test_slash_variable_group_owns_following_eq_list():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*ICFD_CONTROL_OUTPUT_VAR"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1", "2", "3", "4"),
+                    _row(1, "Variable", "VEL", "AVGVEL", "VORT", "PRE"),
+                ]
+            ),
+            TextBlock(text="VARIABLE"),
+            TextBlock(text="DESCRIPTION"),
+            TextBlock(text="VEL/AVGVEL/ Velocity and average velocity:\nVORT EQ.0: Is output.\nEQ.1: Is not output."),
+        ],
+    )
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+    descriptions = {item.variable: item for item in keyword.variable_descriptions}
+
+    assert descriptions["VEL, AVGVEL, VORT"].applies_to == ["VEL", "AVGVEL", "VORT"]
+    assert descriptions["VEL, AVGVEL, VORT"].blocks[0].block.text.startswith("VEL/AVGVEL")
+    assert not any(
+        issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
+        for issue in keyword.issues
+    )
+    assert not validate_keyword_ir(keyword)
+
+
+def test_multiline_variable_label_and_simple_math_heading_use_catalog():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1", "2", "3"),
+                    _row(1, "Variable", "IDAM", "VS", "PNAK"),
+                ]
+            ),
+            TextBlock(text="VARIABLE\nIDAM"),
+            TextBlock(text="DESCRIPTION"),
+            TextBlock(text="IDAM EQ.0: Use the damage value."),
+            TextBlock(text="$$ V_s $$"),
+            TextBlock(text="Velocity scale."),
+            MathBlock(text=r"$$ P_{\mathrm{N a K}}, $$"),
+        ],
+    )
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    descriptions = {item.variable: item for item in keyword.variable_descriptions}
+    assert {"IDAM", "VS", "PNAK"} <= descriptions.keys()
+    assert any(
+        block.block.text == "Velocity scale."
+        for block in descriptions["VS"].blocks
+    )
+    assert not any(
+        issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
+        for issue in keyword.issues
+    )
+    assert not validate_keyword_ir(keyword)
 
 
 def test_variable_descriptions_use_explicit_header_without_card_catalog():
@@ -1070,6 +1428,177 @@ def test_renderer_writes_structured_markdown(tmp_path):
     assert "$$\nE=mc^2\n$$" in markdown
     assert "Figure omitted" in markdown
     assert "2-1 (R17)" not in markdown
+
+
+def test_theory_renderer_writes_chapter_markdown_and_manifest(tmp_path):
+    section = Section(
+        section_id="35.1",
+        keyword_id=None,
+        name="First",
+        volume=None,
+        kind="theory",
+        parent_section_id="35",
+        pdf_pages=[1],
+        manual_pages=["35-1"],
+        document_id="theory",
+        section_number="35.1",
+    )
+    page = PageIR(
+        document_id="theory",
+        pdf_page=1,
+        manual_page="35-1",
+        blocks=[TextBlock(text="35.1 First"), TextBlock(text="Theory body")],
+    )
+    theory = reconstruct_theory(
+        assemble_sections([section], {("theory", 1): page})
+    )[0]
+
+    rendered = render_theory(
+        [theory], corpus_root=tmp_path, release="R17"
+    )[0]
+
+    assert rendered.markdown_path == tmp_path / "markdown" / "theory" / "35.1.md"
+    markdown = rendered.markdown_path.read_text(encoding="utf-8")
+    assert "section_id: '35.1'" in markdown
+    assert "parent_section_id: '35'" in markdown
+    assert markdown.count("35.1 First") == 1
+    assert "Theory body" in markdown
+    assert rendered.manifest_record == {
+        "document_id": "theory",
+        "manual_type": "theory",
+        "section_id": "35.1",
+        "section_number": "35.1",
+        "title": "First",
+        "parent_section_id": "35",
+        "source_pages": [{"pdf_page": 1, "manual_page": "35-1"}],
+        "markdown_path": "markdown/theory/35.1.md",
+        "status": "success",
+    }
+
+
+def test_theory_renderer_preserves_text_merged_into_title_anchor(tmp_path):
+    theory = reconstruct_theory(
+        assemble_sections(
+            [
+                Section(
+                    "35",
+                    None,
+                    "Parent",
+                    None,
+                    "theory",
+                    None,
+                    [1],
+                    ["35-1"],
+                    "theory",
+                    "35",
+                )
+            ],
+            {
+                ("theory", 1): PageIR(
+                    document_id="theory",
+                    pdf_page=1,
+                    manual_page="35-1",
+                    blocks=[TextBlock(text="35 Parent introduction continues")],
+                )
+            },
+        )
+    )[0]
+
+    rendered = render_theory(
+        [theory], corpus_root=tmp_path, release="R17"
+    )[0]
+    markdown = rendered.markdown_path.read_text(encoding="utf-8")
+
+    assert "35 Parent introduction continues" in markdown
+
+
+def test_run_reconstruction_writes_theory_to_unified_manifest(tmp_path):
+    manual = tmp_path / "LS-DYNA_Manual_Theory_R17.pdf"
+    pdf_writer = PdfWriter()
+    pdf_writer.add_blank_page(width=612, height=792)
+    with manual.open("wb") as handle:
+        pdf_writer.write(handle)
+
+    corpus = tmp_path / "corpus"
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"""manual:
+  release: R17
+  documents:
+    - path: "{manual}"
+parser:
+  provider: paddleocr-vl-remote
+  model: PaddleOCR-VL-1.6
+  api_key: null
+output:
+  corpus_dir: "{corpus}"
+""",
+        encoding="utf-8",
+    )
+    intermediate = corpus / "intermediate" / "theory"
+    intermediate.mkdir(parents=True)
+    document = {
+        "document_id": "theory",
+        "manual_type": "theory",
+        "release": "R17",
+        "volume": None,
+    }
+    (intermediate / "pagemap.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1",
+                "document": document,
+                "pages": [
+                    {"pdf_page": 1, "manual_page": "1-1", "evidence": "footer"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (intermediate / "sectionmap.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1",
+                "document": document,
+                "sections": [
+                    {
+                        "section_id": "1",
+                        "keyword_id": None,
+                        "name": "Abstract",
+                        "volume": None,
+                        "kind": "theory",
+                        "parent_section_id": None,
+                        "pdf_pages": [1],
+                        "manual_pages": ["1-1"],
+                        "document_id": "theory",
+                        "section_number": "1",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    pageir_path = corpus / "parsing" / "pageir" / "theory" / "page_000001.json"
+    pageir_path.parent.mkdir(parents=True)
+    save_page_ir(
+        PageIR(
+            document_id="theory",
+            pdf_page=1,
+            manual_page="1-1",
+            blocks=[TextBlock(text="1 Abstract"), TextBlock(text="Theory body")],
+        ),
+        pageir_path,
+    )
+
+    result = run_reconstruction(config, log=lambda _message: None)
+
+    assert result.status == "success"
+    record = json.loads((corpus / "manifest.jsonl").read_text(encoding="utf-8"))
+    assert record["manual_type"] == "theory"
+    assert record["section_id"] == "1"
+    assert "keyword_id" not in record
+    assert record["markdown_path"] == "markdown/theory/1.md"
+    assert (corpus / record["markdown_path"]).is_file()
 
 
 def test_run_reconstruction_writes_corpus_outputs(tmp_path):

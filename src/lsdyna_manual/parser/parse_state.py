@@ -28,6 +28,7 @@ class PageParseState:
     raw_json_path: str | None = None
     raw_markdown_path: str | None = None
     pageir_path: str | None = None
+    empty_parse_attempts: int = 0
     error: str | None = None
     updated_at: str | None = None
 
@@ -54,6 +55,7 @@ class PageParseState:
             "raw_json_path": self.raw_json_path,
             "raw_markdown_path": self.raw_markdown_path,
             "pageir_path": self.pageir_path,
+            "empty_parse_attempts": self.empty_parse_attempts,
             "error": self.error,
             "updated_at": self.updated_at,
         }
@@ -79,6 +81,7 @@ class PageParseState:
             raw_json_path=data.get("raw_json_path"),
             raw_markdown_path=data.get("raw_markdown_path"),
             pageir_path=data.get("pageir_path"),
+            empty_parse_attempts=int(data.get("empty_parse_attempts", 0)),
             error=data.get("error"),
             updated_at=data.get("updated_at"),
         )
