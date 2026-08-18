@@ -220,7 +220,7 @@ def test_keyword_quality_findings_name_concrete_candidates():
     )
 
     assert findings["card_summary_definition_dual_render"] == ["Card 1"]
-    assert findings["duplicate_variable_descriptions"] == ["E0"]
+    assert findings["duplicate_variable_descriptions"] == []
     assert ["E0", "EO"] in findings["confusable_identifier_pairs"]
     assert ["V0", "VO"] in findings["confusable_identifier_pairs"]
     assert findings["literal_backslash_n_count"] == 1

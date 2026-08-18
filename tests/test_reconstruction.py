@@ -341,11 +341,12 @@ def test_keyword_ir_classifies_strong_semantic_anchors(tmp_path):
         "definition",
     ]
     assert len(keyword.card_table_blocks) == 2
-    assert len(keyword.cards[0].fields) == 1
+    assert len(keyword.cards[0].fields) == 2
     assert keyword.cards[0].fields[0].variable == "EOSID"
+    assert keyword.cards[0].fields[1].variable == "A"
     assert keyword.cards[0].fields[0].field_type is None
     assert keyword.cards[0].fields[0].default is None
-    assert keyword.variable_catalog == ["EOSID"]
+    assert keyword.variable_catalog == ["EOSID", "A"]
     assert len(keyword.variable_description_blocks) == 1
     assert [description.variable for description in keyword.variable_descriptions] == [
         "EOSID"
@@ -357,9 +358,10 @@ def test_keyword_ir_classifies_strong_semantic_anchors(tmp_path):
     ]
     assert len(keyword.remarks_blocks) == 2
     assert len(keyword.references_blocks) == 2
-    assert [block.block.text for block in keyword.unclassified_blocks] == [
+    assert [block.block.text for block in keyword.description_blocks] == [
         "This is Equation of State Form 2."
     ]
+    assert not keyword.unclassified_blocks
     assert len(keyword.accounted_blocks()) == len(blocks)
     assert not validate_keyword_ir(keyword)
 
@@ -377,7 +379,8 @@ def test_keyword_ir_classifies_strong_semantic_anchors(tmp_path):
     assert "### EOSID" in markdown
     assert "| Variable | Description |" in markdown
     assert markdown.count("Identifier description.") == 1
-    assert "## Source Material" in markdown
+    assert "## Description" in markdown
+    assert "## Source Material" not in markdown
     assert "This is Equation of State Form 2." in markdown
 
 
@@ -459,6 +462,41 @@ def test_card_fields_preserve_empty_slots_and_short_ocr_rows():
         "column": 8,
     }
     assert keyword.variable_catalog == ["MID", "RO"]
+
+
+def test_card_fields_recover_merged_labels_and_compressed_rows():
+    table = TableBlock(
+        rows=[
+            _row(0, "Card 2a.1", "1", "2"),
+            _row(1, "Variable\nType", "XI\\nF", "ETA\\nI"),
+            _row(2, "Default", "none", "0"),
+            _row(3, "Card 2a.2", "1", "2"),
+            _row(4, "Variable Type Default", "ALPHA", "BETA"),
+            _row(5, "F", "I"),
+            _row(6, "1.0", "2"),
+        ]
+    )
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[TextBlock(text="*MAT_EXAMPLE"), table],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert [card.label for card in keyword.cards] == ["Card 2a.1", "Card 2a.2"]
+    assert [
+        (field.variable, field.field_type, field.default)
+        for field in keyword.cards[0].fields
+    ] == [("XI", "F", "none"), ("ETA", "I", "0")]
+    assert [
+        (field.variable, field.field_type, field.default)
+        for field in keyword.cards[1].fields
+    ] == [("ALPHA", "F", "1.0"), ("BETA", "I", "2")]
+    assert keyword.variable_catalog == ["XI", "ETA", "ALPHA", "BETA"]
 
 
 def test_card_definition_missing_variable_row_retains_slots_with_issue():
@@ -805,6 +843,200 @@ def test_variable_description_families_map_to_concrete_catalog_slots(tmp_path):
     markdown = rendered.markdown_path.read_text(encoding="utf-8")
     assert "### Aij" in markdown
     assert "Applies to: `A10`, `A11`, `A20`" in markdown
+
+
+def test_variable_descriptions_map_indexed_and_unique_confusable_names():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1", "2", "3", "4"),
+                    _row(1, "Variable", "B1BEG", "B2BEG", "EO", "VO"),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "B[N]BEG", "Indexed beam range."),
+                    _row(2, "E0", "Energy."),
+                    _row(3, "V0", "Volume."),
+                ]
+            ),
+        ],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+    descriptions = {item.variable: item for item in keyword.variable_descriptions}
+
+    assert descriptions["B[N]BEG"].applies_to == ["B1BEG", "B2BEG"]
+    assert {"EO", "VO"} <= descriptions.keys()
+    assert sum(
+        issue.code == "VARIABLE_IDENTIFIER_CONFUSABLE_MATCH"
+        for issue in keyword.issues
+    ) == 2
+    assert not any(
+        issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
+        for issue in keyword.issues
+    )
+
+
+def test_variable_descriptions_use_explicit_header_without_card_catalog():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "CID", "Coordinate system identifier."),
+                    _row(2, "A", "Single-letter variable."),
+                ]
+            ),
+        ],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert [item.variable for item in keyword.variable_descriptions] == ["CID", "A"]
+    assert any(
+        issue.code == "VARIABLE_DESCRIPTION_CATALOG_UNAVAILABLE"
+        for issue in keyword.issues
+    )
+    assert not any(
+        issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
+        for issue in keyword.issues
+    )
+
+
+def test_variable_value_tables_attach_to_catalog_heading():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1", "2", "3"),
+                    _row(1, "Variable", "A1", "XP", "YP"),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "A1 value", "Description"),
+                    _row(2, "1", "First choice"),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "A1 value", "Description"),
+                    _row(1, "2", "Second choice"),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "XP, YP", "Shared coordinate description"),
+                ]
+            ),
+        ],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+    descriptions = {item.variable: item for item in keyword.variable_descriptions}
+
+    assert len(descriptions["A1"].tables) == 2
+    assert descriptions["XP, YP"].applies_to == ["XP", "YP"]
+    assert not any(
+        issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
+        for issue in keyword.issues
+    )
+
+
+def test_renderer_normalizes_literal_cell_newlines_and_keeps_latex(tmp_path):
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1"),
+                    _row(1, "Variable", "A"),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "A", "Line one\\nEQ.0: None; $\\nabla x$"),
+                ]
+            ),
+        ],
+    )
+
+    rendered = render_sections(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page}),
+        corpus_root=tmp_path,
+        release="R17",
+    )[0]
+    markdown = rendered.markdown_path.read_text(encoding="utf-8")
+
+    assert "Line one <br> EQ.0: None" in markdown
+    assert "$\\nabla x$" in markdown
+    assert "Line one\\nEQ" not in markdown
+
+
+def test_renderer_skips_redundant_summary_and_exact_duplicate_descriptions(tmp_path):
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TextBlock(text="Card Summary:"),
+            TextBlock(text="Card 1."),
+            TableBlock(rows=[_row(0, "A", "B")]),
+            TextBlock(text="Data Card Definitions:"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1", "2"),
+                    _row(1, "Variable", "A", "B"),
+                    _row(2, "Type", "F", "F"),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "A", "Repeated description"),
+                ]
+            ),
+            TableBlock(rows=[_row(0, "A", "Repeated description")]),
+        ],
+    )
+
+    rendered = render_sections(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page}),
+        corpus_root=tmp_path,
+        release="R17",
+    )[0]
+    markdown = rendered.markdown_path.read_text(encoding="utf-8")
+
+    assert "\n| A | B |\n" not in markdown
+    assert markdown.count("Repeated description") == 1
 
 
 def test_renderer_writes_structured_markdown(tmp_path):

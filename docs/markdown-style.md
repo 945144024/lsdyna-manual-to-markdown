@@ -2,7 +2,7 @@
 
 本文档定义 `lsdyna-manual-builder` 生成的 Keyword Markdown 文档的组织结构与格式规则，是 `markdown` 模块 renderer 的实现依据。
 
-> 本文档描述目标 Corpus Markdown 格式。当前 v0.1 已实现保守 renderer：按 SectionMap 聚合 PageIR，经 KeywordIR 做共享页块级归属，并识别强 Purpose、Option、Card、变量说明区域、Remarks 与 References 锚点；CardIR 已区分 summary / definition 表、提取 definition 字段槽位并归属 Card 条件文本，VariableDescriptionIR 已完成表格行、跨页续表和强文本标题归属，并支持变量族泛称的 `Applies to` 映射。renderer 输出结构化语义小节，对不确定结构保留 Source Material fallback。真实 EOS/MAT 页面仍发现 summary/definition 重复、`EO/E0`、`VO/V0`、字面量 `\\n` 和重复变量描述等待修订问题。Provider 返回的 raw Markdown（如 PaddleOCR-VL remote Markdown）仍不是最终产品格式。实现状态见 `README.md`、`docs/project-status.md` 与 `parser-interface.md`。
+> 本文档描述目标 Corpus Markdown 格式。当前 v0.1 renderer 按 SectionMap 聚合 PageIR，经 KeywordIR 做共享页块级归属，并识别 Description、Purpose、Option、Card、变量说明区域、Remarks 与 References；CardIR 支持 summary / definition、合并的 Variable/Type/Default 行、点号子卡、字段槽位和条件文本，VariableDescriptionIR 支持表格行、文本前缀、跨页续表、值表及变量族映射。等价 summary 和完全重复说明只在渲染层去重，来源仍参与 block accounting；不确定结构保留 Source Material fallback。Provider raw Markdown 不是最终产品格式。
 
 ## 1. 基本规则
 
@@ -61,6 +61,10 @@ source_pages:
 ---
 
 # *MAT_EXAMPLE
+
+## Description
+
+[Manual source text]
 
 ## Purpose
 
@@ -121,6 +125,8 @@ source_pages:
 - [Manual source text]
 ```
 
+`Description` 为可选小节，只接收 Keyword 标题之后、首个强语义锚点之前的连续原文块，不生成摘要或改写内容。
+
 ## 4. 格式规则
 
 ### 4.1 Card 表格
@@ -128,6 +134,8 @@ source_pages:
 Card 表遵循 Manual 实际结构。常见数据行为 Variable、Type、Default 与 Remark；实际 Card 存在其他行时应按原文保留，不得为套用模板删除。
 
 Card 表应保留 Manual 显示的全部字段槽位，包括空字段。标准 8-field Card 保留全部 8 个位置，空位置具有排版与字段位置意义，不得截断。
+
+当 OCR 将 `Variable`、`Type`、`Default` 合并到一行或单元格内时，只在 Card 槽位和字段类型形状同时成立时拆分。Card summary 仅在其变量槽位与 definition 完全一致且没有提供 definition 缺失字段时省略；否则两者都保留。
 
 条件卡（如 Card 1a、Card 1b）作为独立三级小节与独立表格输出。条件说明只能来自 Manual，不得由 LLM 根据参数关系生成。
 
@@ -138,6 +146,8 @@ Card 条件说明会保留完整原文，并在 Card 小节下增加 `#### Condi
 每个变量使用三级标题。
 
 Variable Description 只保存 Manual 中属于该变量的原始说明内容。类型与默认值已存在于 Card 表，不得重复输出；Manual 原变量说明本身包含这些信息时按原文保留。
+
+表格单元格中的真实换行和 OCR 字面量 `\\n` 使用 `<br>` 渲染；常见 LaTeX 命令（如 `\\nabla`、`\\nu`）不得被当作换行。完全相同的说明片段可在渲染层省略重复副本，但每个来源块仍须参与 block accounting。
 
 当 Manual 使用变量族泛称（例如 `Aij`、`Ai, Bi` 或 `Ci`）时，renderer 可根据同一条目 Card 变量目录做确定性前缀映射，并输出 `Applies to: ...`。无法安全映射时保留泛称原文并记录 issue。
 

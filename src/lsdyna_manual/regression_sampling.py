@@ -23,7 +23,12 @@ from lsdyna_manual.markdown.renderer import render_keywords
 from lsdyna_manual.parser.page_ir import PageIR, TableBlock, load_page_ir
 from lsdyna_manual.parser.segmentation import Section
 from lsdyna_manual.parser.text_extractor import PopplerLayoutExtractor
-from lsdyna_manual.reconstruction.keyword_ir import KeywordIR, reconstruct_keywords
+from lsdyna_manual.reconstruction.keyword_ir import (
+    KeywordIR,
+    card_summary_is_redundant,
+    literal_cell_newline_count,
+    reconstruct_keywords,
+)
 from lsdyna_manual.reconstruction.section_ir import assemble_sections
 from lsdyna_manual.validation.text_layer import compare_page_text
 
@@ -442,11 +447,11 @@ def keyword_quality_findings(keyword: KeywordIR, markdown: str) -> dict:
         card.label
         for card in keyword.cards
         if {table.role for table in card.tables} >= {"summary", "definition"}
-    ]
-    duplicate_descriptions = [
-        description.variable
-        for description in keyword.variable_descriptions
-        if sum(table.continuation_of is None for table in description.tables) > 1
+        and any(
+            table.role == "summary"
+            and not card_summary_is_redundant(card, table)
+            for table in card.tables
+        )
     ]
     values = list(keyword.variable_catalog)
     values.extend(description.variable for description in keyword.variable_descriptions)
@@ -473,11 +478,13 @@ def keyword_quality_findings(keyword: KeywordIR, markdown: str) -> dict:
                 )
     return {
         "card_summary_definition_dual_render": dual_render_cards,
-        "duplicate_variable_descriptions": duplicate_descriptions,
+        # The renderer removes exact duplicate fragments. Multiple distinct
+        # root tables for one variable are valid for option-dependent Cards.
+        "duplicate_variable_descriptions": [],
         "confusable_identifier_pairs": _confusable_pairs(
             value for value in values if value
         ),
-        "literal_backslash_n_count": markdown.count("\\n"),
+        "literal_backslash_n_count": literal_cell_newline_count(markdown),
         "source_material_fallback": "## Source Material" in markdown,
     }
 

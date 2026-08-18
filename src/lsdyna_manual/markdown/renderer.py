@@ -19,7 +19,10 @@ from lsdyna_manual.reconstruction.keyword_ir import (
     KeywordIR,
     SourcedBlock,
     VariableDescriptionTableIR,
+    card_summary_is_redundant,
+    normalize_literal_cell_newlines,
     reconstruct_keywords,
+    table_range_signature,
 )
 from lsdyna_manual.reconstruction.section_ir import SectionIR
 
@@ -79,7 +82,12 @@ def _front_matter(section: KeywordIR, release: str) -> str:
 
 
 def _escape_cell(value: str) -> str:
-    return " ".join(value.replace("|", "\\|").splitlines()).strip()
+    normalized = normalize_literal_cell_newlines(value)
+    return " <br> ".join(
+        line.replace("|", "\\|").strip()
+        for line in normalized.splitlines()
+        if line.strip()
+    )
 
 
 def _render_table(block: TableBlock) -> list[str]:
@@ -141,10 +149,18 @@ def _source_key(sourced: SourcedBlock) -> tuple[str, int, int]:
 
 def _is_section_header_text(section: KeywordIR, text: str) -> bool:
     normalized = re.sub(r"[^A-Za-z0-9]+", "", text).upper()
+    full_name = re.sub(r"[^A-Za-z0-9]+", "", section.name).upper()
     root = re.sub(
         r"[^A-Za-z0-9]+", "", section.name.split("_", 1)[0]
     ).upper()
-    return bool(normalized and normalized == root)
+    if not normalized:
+        return False
+    if normalized in {root, full_name}:
+        return True
+    title_like = bool(
+        re.fullmatch(r"[\s$^*{}_\\A-Za-z0-9.-]+", text)
+    )
+    return title_like and normalized.startswith(full_name)
 
 
 def _render_variable_table(
@@ -209,11 +225,43 @@ def _group_table_parts(
     return groups
 
 
+def _deduplicate_table_parts(
+    tables: list[VariableDescriptionTableIR],
+) -> list[VariableDescriptionTableIR]:
+    seen: set[tuple[tuple[str, ...], ...]] = set()
+    selected: list[VariableDescriptionTableIR] = []
+    for table in tables:
+        signature = table_range_signature(table)
+        if signature and signature in seen:
+            continue
+        if signature:
+            seen.add(signature)
+        selected.append(table)
+    return selected
+
+
+def _deduplicate_text_blocks(blocks: list[SourcedBlock]) -> list[SourcedBlock]:
+    seen: set[str] = set()
+    selected: list[SourcedBlock] = []
+    for sourced in blocks:
+        if not isinstance(sourced.block, TextBlock):
+            selected.append(sourced)
+            continue
+        signature = re.sub(r"\s+", " ", sourced.block.text).strip()
+        if signature and signature in seen:
+            continue
+        if signature:
+            seen.add(signature)
+        selected.append(sourced)
+    return selected
+
+
 def _render_semantic_body(section: KeywordIR) -> list[str] | None:
     """Render strong semantic regions and return None when no regions exist."""
 
     has_semantics = bool(
-        section.purpose_blocks
+        section.description_blocks
+        or section.purpose_blocks
         or section.options
         or section.cards
         or section.variable_descriptions
@@ -244,6 +292,10 @@ def _render_semantic_body(section: KeywordIR) -> list[str] | None:
             selected.append(sourced)
         lines.extend(_render_blocks(selected))
 
+    if section.description_blocks:
+        add_heading(2, "Description")
+        add_blocks(section.description_blocks)
+
     if section.purpose_blocks:
         add_heading(2, "Purpose")
         add_blocks(section.purpose_blocks)
@@ -266,7 +318,15 @@ def _render_semantic_body(section: KeywordIR) -> list[str] | None:
 
     if section.cards:
         add_heading(2, "Card Definitions")
-        consumed.update(_source_key(block) for block in section.card_intro_blocks)
+        add_blocks(
+            section.card_intro_blocks,
+            skip_labels={
+                "card summary",
+                "card summary:",
+                "data card definitions",
+                "data card definitions:",
+            },
+        )
         for card in section.cards:
             add_heading(3, card.label)
             condition_sources = {
@@ -300,7 +360,12 @@ def _render_semantic_body(section: KeywordIR) -> list[str] | None:
             )
             for table in card.tables:
                 consumed.add(_source_key(table.source_block))
-            for rows in _group_table_parts(card.tables):
+            rendered_tables = [
+                table
+                for table in card.tables
+                if not card_summary_is_redundant(card, table)
+            ]
+            for rows in _group_table_parts(rendered_tables):
                 lines.extend(_render_table(TableBlock(rows=rows)))
 
     if section.variable_descriptions or section.variable_description_blocks:
@@ -327,10 +392,12 @@ def _render_semantic_body(section: KeywordIR) -> list[str] | None:
                     == description.variable.casefold()
                 )
             ]
-            add_blocks(description_blocks)
+            add_blocks(_deduplicate_text_blocks(description_blocks))
             for table in description.tables:
                 consumed.add(_source_key(table.source_block))
-            for rows in _group_table_parts(description.tables):
+            for rows in _group_table_parts(
+                _deduplicate_table_parts(description.tables)
+            ):
                 lines.extend(_render_variable_rows(rows))
         for sourced in section.variable_description_blocks:
             key = _source_key(sourced)
@@ -391,6 +458,10 @@ def _render_semantic_body(section: KeywordIR) -> list[str] | None:
         block
         for block in section.content_blocks()
         if _source_key(block) not in consumed
+        and not (
+            isinstance(block.block, TextBlock)
+            and _is_section_header_text(section, block.block.text.strip())
+        )
     ]
     if fallback:
         add_heading(2, "Source Material")

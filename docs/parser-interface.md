@@ -296,7 +296,7 @@ Adapter 不执行 LS-DYNA-specific 结构修复。真实 Provider 输出可能�
 
 当前已实现：`PageIR` 结构校验与 `(document_id, pdf_page)` 身份校验，`manual_page` 由 PageMap 填入。
 
-当前已实现 PDF 文本层与视觉解析结果的确定性抽样比对。默认对每个有 PageIR 的文档抽取首、中、尾最多 3 个 PDF 页面，使用 `pdftotext -layout` 得到文本层 token，与 PageIR 中的 TextBlock 和 TableBlock 单元格做 multiset overlap。结果写入 `reports/text_layer_comparison.json`，低于阈值时将 reconstruction 状态提升为 `warning`，但不会覆盖 PageIR 或自动修复原文。
+当前已实现 PDF 文本层与视觉解析结果的确定性抽样比对。默认对每个有 PageIR 的文档抽取首、中、尾最多 3 个 PDF 页面，使用 `pdftotext -layout` 得到文本层 token，与 PageIR 可见内容做 multiset overlap。报告同时保存 raw visual recall 和排除 MathBlock/行内公式后的 prose recall；raw recall 低而 prose recall 达标时记录 `TEXT_LAYER_FORMULA_REPRESENTATION_DIVERGENCE`，普通正文差异仍记录 `TEXT_LAYER_DIVERGENCE`。两者都会将 reconstruction 状态提升为 `warning`，且不会覆盖 PageIR 或自动修复原文。
 
 - `manual_page` 归一：`PageIR.manual_page` 以 PageMap 为基准填充与核对，不要求 Provider 理解印刷页码；
 - PDF 文本层定位为 Evidence / Validation Source：将视觉解析结果与文本层证据比对，冲突时记录 issue（如 `TEXT_LAYER_DIVERGENCE`），不得静默覆盖视觉解析内容；
@@ -315,15 +315,15 @@ Adapter 不执行 LS-DYNA-specific 结构修复。真实 Provider 输出可能�
 - 页眉页脚从正文流中移出，但仍保留为 `ignored_blocks` 来源证据；
 - 明确的 `Purpose:`、`Available options are:`、`Card Summary:`、`Data Card Definitions:`、`VARIABLE | DESCRIPTION`、`Remarks:` 和 `References:` 锚点用于确定语义区域；
 - Card 通过 `Card N` 文本与表内 Card 行聚合；同一 TableBlock 可按 Card 行拆为多个语义行区间，但原始表块只参与一次 block 守恒记账；
-- Card 表区分 `summary` 与 `definition`。仅 definition 区间按 Card 表头的固定槽位提取 Variable、Type 和 Default；OCR 短行按表头补 `null`，不从 summary 表猜测缺失字段；
+- Card 表区分 `summary` 与 `definition`。definition 区间按 Card 表头的固定槽位提取 Variable、Type 和 Default，并在强结构证据下恢复合并行；OCR 短行按表头补 `null`。summary 只用于补充 definition 中确实缺失且具有明确槽位的变量，不覆盖冲突字段；
 - Card 字段保留 `(document_id, pdf_page, block_index, row, column)` 单元格来源，非空变量按首次出现顺序去重形成 Keyword 变量目录；
 - Card 条件文本从归属于该 Card 的原文块中提取为 `CardConditionIR`，支持 `=`、`EQ.`、`NE.`、`GE.`、`GT.`、`LE.`、`LT.`；结构化字段保留 variable/operator/values/raw/source_text/source，不改写完整原句；
 - Card 与 Variable Description 的跨页表格只在存在明确续接证据时设置 `continuation_of` 并合并渲染；孤立续表保留原始块并记录 issue，不根据页面邻接关系猜测；
 - 显式 Option 仅从 Option 列表读取；Variable Description 表格按变量目录拆为行区间，空首列续行归入当前变量；单独文本变量标题及其后续块在强匹配时归入 `VariableDescriptionIR`；
 - `VariableDescriptionIR.applies_to` 保存变量族泛称到同一 Keyword 具体 Card 槽位的确定性映射，例如 `Aij` → `A10`/`A11`/`A20`，无法确认时不扩展；
-- 不能由强规则归类的正文块保存在 `unclassified_blocks`，并通过守恒校验防止静默丢失。
+- Keyword 标题之后、首个强语义锚点之前的连续正文归入 `description_blocks`；不能由强规则归类的正文块保存在 `unclassified_blocks`，并通过守恒校验防止静默丢失。
 
-Card 表头无有效槽位、缺少 Variable 行或出现重复语义行时分别记录 `CARD_DEFINITION_SLOT_HEADER_INVALID`、`CARD_DEFINITION_VARIABLE_ROW_MISSING` 或 `CARD_DEFINITION_ROW_AMBIGUOUS`，同时保留原表。Variable Description 无法匹配 Card 变量目录，或出现没有当前变量的续行时记录 `VARIABLE_DESCRIPTION_UNMATCHED_TITLE` / `VARIABLE_DESCRIPTION_CONTINUATION_ORPHAN`，保留原始块。Markdown renderer 已将已确认结构输出为 Purpose、Options、Card Definitions、Variable Descriptions、Remarks 和 References 小节；跨页续表仅按显式 continuation 合并，更深层的版面推断仍按真实页面证据逐步增加。全部规则使用确定性代码；无法可靠确定的结构保留原始块并记 issue，不预设第二个 LLM 阶段。
+Card 表头无有效槽位、缺少 Variable 行或出现重复语义行时分别记录 `CARD_DEFINITION_SLOT_HEADER_INVALID`、`CARD_DEFINITION_VARIABLE_ROW_MISSING` 或 `CARD_DEFINITION_ROW_AMBIGUOUS`，同时保留原表。Variable Description 无法匹配 Card 变量目录时记录 `VARIABLE_DESCRIPTION_UNMATCHED_TITLE`；没有 Card 目录但存在明确 `VARIABLE | DESCRIPTION` 表头时可索引变量，同时记录 `VARIABLE_DESCRIPTION_CATALOG_UNAVAILABLE`。唯一 O/0 关联记录 `VARIABLE_IDENTIFIER_CONFUSABLE_MATCH`，源文本保持不变。Markdown renderer 输出 Description、Purpose、Options、Card Definitions、Variable Descriptions、Remarks 和 References；跨页续表仅按显式或强连续形状合并。全部规则使用确定性代码；无法可靠确定的结构保留原始块并记 issue，不预设第二个 LLM 阶段。
 
 ## 5. Header 与 Footer 的下游使用
 

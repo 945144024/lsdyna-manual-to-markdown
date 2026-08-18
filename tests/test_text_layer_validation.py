@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from lsdyna_manual.parser.page_ir import PageIR, TableBlock, TextBlock
+from lsdyna_manual.parser.page_ir import MathBlock, PageIR, TableBlock, TextBlock
 from lsdyna_manual.validation.text_layer import compare_text_layer_samples
 
 
@@ -60,6 +60,34 @@ def test_text_layer_sample_reports_divergence_and_missing_tokens(tmp_path):
     assert report.samples[0].visual_recall < 0.65
     assert any(issue.code == "TEXT_LAYER_DIVERGENCE" for issue in report.issues)
     assert "beta" in report.samples[0].missing_visual_tokens
+
+
+def test_text_layer_distinguishes_formula_representation_divergence(tmp_path):
+    page = PageIR(
+        document_id="theory",
+        pdf_page=1,
+        manual_page="1-1",
+        blocks=[
+            TextBlock(text="Conservation equation"),
+            MathBlock(text=r"\frac{\partial \mathbf{x}}{\partial t}"),
+        ],
+    )
+    report = compare_text_layer_samples(
+        document_id="theory",
+        pdf_path=tmp_path / "manual.pdf",
+        page_irs={1: page},
+        extractor=FakeExtractor(["Conservation equation ∂x/∂t"]),
+        sample_count=1,
+        min_tokens=1,
+        min_visual_recall=0.65,
+    )
+
+    sample = report.samples[0]
+    assert sample.visual_recall < 0.65
+    assert sample.prose_visual_recall == 1.0
+    assert {
+        issue.code for issue in report.issues
+    } == {"TEXT_LAYER_FORMULA_REPRESENTATION_DIVERGENCE"}
 
 
 def test_text_layer_sampling_uses_deterministic_first_middle_last_pages(tmp_path):

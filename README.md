@@ -24,7 +24,7 @@
 - `lsdyna-manual parse` 按 SectionMap 软边界与固定页面硬上限提交 PaddleOCR，显示页面进度并支持配额暂停与断点续跑；
 - `lsdyna-manual reconstruct` 将现有 PageIR 按 SectionMap 候选范围聚合为 SectionIR，再生成带 block 来源引用的 KeywordIR，并输出可追溯的 Keyword Markdown、manifest 与质量报告；目前是保守的首版 renderer，未知结构会保留 Source Material 并标 warning；
 - `lsdyna-manual build` 当前仍只执行发现、校验和 ingest，不调用远程 OCR，也不生成最终 Markdown；
-- KeywordIR 已识别强 Purpose、Option、Card、变量说明区域、Remarks 和 References 锚点；Card 表已区分 summary / definition，并从 definition 表按固定槽位生成带单元格来源的字段与 Keyword 变量目录；Variable Description 表格行和跨块文本已按变量目录进行保守归属；条件操作符、跨页续表和变量族泛称映射已进入首版语义重建；PDF 文本层抽样比对已实现。
+- KeywordIR 已识别 Description、Purpose、Option、Card、变量说明区域、Remarks 和 References；Card 表支持 summary / definition、合并行、点号子卡、固定槽位和 summary 缺槽补充；Variable Description 支持表格行、跨块文本、值表、续表、显式列表和变量族归属。renderer 会保守处理 O/0 歧义、字面单元格换行和精确重复片段；文本层验证同时报告 raw visual recall 与非公式正文 recall。
 
 ```text
 Manual PDF
@@ -198,7 +198,7 @@ intermediate/
 
 PaddleOCR 返回配额耗尽时，`parse` 停止提交后续批次、保留 checkpoint，并以退出码 `3` 返回。配额恢复或更换同 provider 的 API Key 后，直接重新运行原命令即可；程序不依赖配额重置日期。
 
-`reconstruct` 要求已经存在 inspection 与 PageIR 产物。它严格保留 SectionMap 的候选页范围，缺页、空页或相邻章节共享边界页时不猜测内容归属，而是生成 `warning` / `failed` 状态和对应 issue。当前仅输出 `kind == "keyword"` 的章节；正文按 PageIR 块顺序保守转换，表格、公式和图片占位符会被保留。Card 条件、明确的跨页续表和变量族泛称会做确定性结构化。默认还会对每个文档的首/中/尾 PageIR 与 PDF 文本层做抽样 token 比对，报告写入 `reports/text_layer_comparison.json`，只用于验证，不覆盖 PageIR。产物为 `corpus.yaml`、`manifest.jsonl`、`markdown/` 和 `reports/`。
+`reconstruct` 要求已经存在 inspection 与 PageIR 产物。它严格保留 SectionMap 的候选页范围，缺页、空页或相邻章节共享边界页时不猜测内容归属，而是生成 `warning` / `failed` 状态和对应 issue。当前仅输出 `kind == "keyword"` 的章节；正文按 PageIR 块顺序保守转换，表格、公式和图片占位符会被保留。Card 条件、强证据续表、变量列表/变量族和合并 Card 行会做确定性结构化。默认还会对每个文档的首/中/尾 PageIR 与 PDF 文本层做抽样 token 比对，并区分公式表示差异与普通正文差异；报告只用于验证，不覆盖 PageIR。产物为 `corpus.yaml`、`manifest.jsonl`、`markdown/` 和 `reports/`。
 
 `reconstruct` 的退出状态反映质量：存在无法生成的 Keyword 时失败；只有 warning 或文本层 divergence 时返回 warning。用户应先查看 `reports/summary.json` 和 `reports/issues.jsonl`，再将生成的 Markdown 作为下游数据使用。
 
