@@ -2,7 +2,7 @@
 
 本文档冻结 Document Inspection 阶段的两个稳定中间产物。JSON Schema 位于 `docs/schemas/`，回归基线位于 `docs/regression-baseline-v0.1.json`。
 
-该契约自 2026-08-17 起冻结，当前项目后续工作集中在 PageIR、SectionIR、KeywordIR 和 Markdown 语义层，不改变页面身份或 SectionMap 候选范围语义。完整开发状态见 `docs/project-status.md`。
+该契约自 2026-08-17 起冻结。PageIR v0.2、SectionIR、KeywordIR、TheoryIR 和 Markdown 语义层均在本契约之上实现，不改变页面身份或 SectionMap 候选范围语义。完整开发状态见 `docs/project-status.md`。
 
 ## 支持范围
 

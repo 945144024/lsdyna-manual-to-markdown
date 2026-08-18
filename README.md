@@ -10,20 +10,21 @@
 - R14、R15、R16、R17 Theory Manual；
 - 同一 release 下任意非空组合，包括单册、部分 Keyword 卷、Keyword + Theory 和 Theory-only。
 
-这项版本承诺目前只覆盖确定性 Inspection；PaddleOCR、PageIR 和最终 Markdown 正在通过 R17 分层样本扩大验证，不能据此推导所有上述版本的语义重建都已逐条复核。其他 release 允许运行，并标记为 `best-effort`，但不保证 PageMap、SectionMap 或后续解析结果。页面使用 `(document_id, pdf_page)` 作为稳定身份，`document_id` 为 `keyword-volume-1`、`keyword-volume-2`、`keyword-volume-3` 或 `theory`。
+这项版本承诺目前只覆盖确定性 Inspection；PaddleOCR、PageIR 和最终 Markdown 已通过 R17 固定分层样本与独立 holdout 验证，但不能据此推导所有上述版本的语义重建都已逐条复核。其他 release 允许运行，并标记为 `best-effort`，但不保证 PageMap、SectionMap 或后续解析结果。页面使用 `(document_id, pdf_page)` 作为稳定身份，`document_id` 为 `keyword-volume-1`、`keyword-volume-2`、`keyword-volume-3` 或 `theory`。
 
 ## 当前能力
 
-项目当前处于 `0.1.0-dev`。这是一个可运行的开发版，Inspection、页面解析和首版 Keyword 重建已经落地，但还不是“任意手册都能无人工复核”的生产质量保证：
+项目当前处于 `0.1.0-dev`。这是一个可运行的开发版，Inspection、页面解析以及 Keyword/Theory 重建已经落地，但还不是“任意手册都能无人工复核”的生产质量保证：
 
 - PageMap / SectionMap v0.1 契约已冻结；
 - R12-R17 共 22 份 Manual 的严格回归基线已建立；
 - 88 个抽样页面已完成 PageMap / SectionMap 模型视觉复核；
-- PaddleOCR-VL Provider、raw artifact、PageIR Adapter 和页面级断点续跑基础设施已实现；
+- PaddleOCR-VL Provider、raw artifact、PageIR v0.2 Adapter（含 rowspan / colspan）和页面级断点续跑基础设施已实现；
 - `lsdyna-manual inspect` 可生成并校验 PageMap / SectionMap；
 - `lsdyna-manual parse` 按 SectionMap 软边界与固定页面硬上限提交 PaddleOCR，显示页面进度并支持配额暂停与断点续跑；
-- `lsdyna-manual reconstruct` 将现有 PageIR 按 SectionMap 候选范围聚合为 SectionIR，再生成带 block 来源引用的 KeywordIR，并输出可追溯的 Keyword Markdown、manifest 与质量报告；目前是保守的首版 renderer，未知结构会保留 Source Material 并标 warning；
-- `lsdyna-manual build` 当前仍只执行发现、校验和 ingest，不调用远程 OCR，也不生成最终 Markdown；
+- `lsdyna-manual reconstruct` 将现有 PageIR 聚合为 SectionIR，再生成 KeywordIR/TheoryIR，并输出可追溯的 Keyword/Theory Markdown、统一 manifest 与质量报告；未知 Keyword 结构会保留为 Source Material；
+- Theory Corpus v0.1 合同、数字层级、title-anchor block 所有权、Markdown renderer 和统一 manifest 接入均已实现，并通过 R17 固定样本和 holdout 验证；
+- `lsdyna-manual build` 是一键入口，依次执行 `inspect -> parse -> reconstruct`；解析阶段沿用 raw/PageIR checkpoint，配额暂停后可用相同命令恢复；
 - KeywordIR 已识别 Description、Purpose、Option、Card、变量说明区域、Remarks 和 References；Card 表支持 summary / definition、合并行、点号子卡、固定槽位和 summary 缺槽补充；Variable Description 支持表格行、跨块文本、值表、续表、显式列表和变量族归属。renderer 会保守处理 O/0 歧义、字面单元格换行和精确重复片段；文本层验证同时报告 raw visual recall 与非公式正文 recall。
 
 ```text
@@ -34,8 +35,8 @@ Manual PDF
   -> page-centric ParsePlan
   -> PaddleOCR-VL raw artifacts
   -> Canonical PageIR
-  -> SectionIR + block-level KeywordIR
-  -> CardIR fields + Keyword variable catalog
+  -> SectionIR + block-level KeywordIR / TheoryIR
+  -> CardIR fields + Keyword variable catalog / Theory ownership
   -> Conservative semantic Markdown Corpus + reports
 ```
 
@@ -96,7 +97,7 @@ output:
   corpus_dir: "./workspace/run_r17"
 ```
 
-API Key 从 [百度 AI Studio PaddleOCR](https://aistudio.baidu.com/paddleocr) 获取。当前 `inspect` 和 ingest-only `build` 不访问远程 API，因此 `api_key` 可暂时保持 `null`；实际创建 PaddleOCR Provider 时必须填写。
+API Key 从 [百度 AI Studio PaddleOCR](https://aistudio.baidu.com/paddleocr) 获取。`inspect` 不访问远程 API；`parse` 和一键 `build` 在存在未缓存页面时会创建 Provider，因此远程模式必须填写 API Key。若请求页面的 raw artifact 已全部通过身份校验，则可离线重建 PageIR，不启动 Provider。
 
 本地模式将 `parser.provider` 改为 `paddleocr-vl-local`。本地 provider 由 PaddleOCR Python worker、PaddleOCR-VL 官方 GGUF、`llama-server` 和 PaddleX 版面模型组成，始终按单页调用，`max_batch_pages` 会被强制为 `1`。模型文件可以由运行时从配置的 Hugging Face 仓库下载；`llama-server` 本身必须已有可执行文件，或配置明确的 direct/archive 下载 URL，项目不会猜测二进制来源。
 辅助版面模型默认从 PaddleX 官方 BOS 源获取，可通过 `parser.local.model_source` 改为
@@ -125,7 +126,7 @@ parser:
 若希望程序安装缺失的 PaddleOCR Python 依赖并下载已配置的运行时产物，将 `auto_prepare_runtime` 设为 `true`，且首次执行：
 
 ```bash
-lsdyna-manual parse configs/local.yaml --allow-runtime-install
+lsdyna-manual build configs/local.yaml --allow-runtime-install
 ```
 
 准备完成后的正常运行不需要继续传 `--allow-runtime-install`。
@@ -148,6 +149,10 @@ manual:
 ## 运行
 
 ```bash
+# 推荐入口：自动完成 inspect、可续跑 parse 和 reconstruct。
+lsdyna-manual build configs/local.yaml
+
+# 各阶段也可独立运行，用于诊断和开发。
 lsdyna-manual inspect configs/local.yaml
 lsdyna-manual parse configs/local.yaml
 lsdyna-manual reconstruct configs/local.yaml
@@ -198,7 +203,7 @@ intermediate/
 
 PaddleOCR 返回配额耗尽时，`parse` 停止提交后续批次、保留 checkpoint，并以退出码 `3` 返回。配额恢复或更换同 provider 的 API Key 后，直接重新运行原命令即可；程序不依赖配额重置日期。
 
-`reconstruct` 要求已经存在 inspection 与 PageIR 产物。它严格保留 SectionMap 的候选页范围，缺页、空页或相邻章节共享边界页时不猜测内容归属，而是生成 `warning` / `failed` 状态和对应 issue。当前仅输出 `kind == "keyword"` 的章节；正文按 PageIR 块顺序保守转换，表格、公式和图片占位符会被保留。Card 条件、强证据续表、变量列表/变量族和合并 Card 行会做确定性结构化。默认还会对每个文档的首/中/尾 PageIR 与 PDF 文本层做抽样 token 比对，并区分公式表示差异与普通正文差异；报告只用于验证，不覆盖 PageIR。产物为 `corpus.yaml`、`manifest.jsonl`、`markdown/` 和 `reports/`。
+`reconstruct` 要求已经存在 inspection 与 PageIR 产物。它严格保留 SectionMap 的候选页范围，缺页、空页或相邻章节共享边界页时不猜测内容归属，而是生成 `warning` / `failed` 状态和对应 issue。Keyword 正文做确定性语义结构化；Theory 按数字章节与唯一 title anchor 切分 block 所有权。两类记录写入同一个 `manifest.jsonl`，Theory 文件位于 `markdown/theory/`。默认还会对每个文档的首/中/尾 PageIR 与 PDF 文本层做抽样 token 比对；报告只用于验证，不覆盖 PageIR。产物为 `corpus.yaml`、`manifest.jsonl`、`markdown/` 和 `reports/`。
 
 `reconstruct` 的退出状态反映质量：存在无法生成的 Keyword 时失败；只有 warning 或文本层 divergence 时返回 warning。用户应先查看 `reports/summary.json` 和 `reports/issues.jsonl`，再将生成的 Markdown 作为下游数据使用。
 
@@ -212,7 +217,15 @@ lsdyna-manual parse configs/local.yaml \
   --sample-manifest workspace/regression/r17/semantic-sample/sample_manifest.json
 ```
 
-`build` 是兼容保留的 ingest-only 命令，只生成 `corpus.yaml`、空的 `manifest.jsonl`、`markdown/` 骨架和 `reports/`，不属于上述主流程。不要在同一输出目录完成 `reconstruct` 后再运行它，否则会重写 manifest。
+`build` 是面向用户的完整入口。它首先重新生成确定性的 inspection 导航产物，然后执行可续跑解析，最后生成完整 Corpus。若 Provider 报告配额耗尽，命令以退出码 `3` 暂停且不提前运行 reconstruction；恢复配额后重新执行同一命令即可。有效 raw/PageIR 会通过源文件、provider/model、adapter 和 schema 身份校验后复用。
+
+## 当前局限
+
+- R12-R17 的版本验证覆盖确定性 Inspection；语义重建目前重点验证了 R17 固定样本与独立 holdout，尚未逐条验证所有版本的完整 Corpus；
+- OCR 或视觉模型可能产生识别偏差、空结果和结构歧义。程序会重试、保留来源并输出 warning / failed 报告，但不保证任意输入都无需复核；
+- 证据不足的共享边界、变量归属和非等价 Card 不会被猜测合并，可能在最终 Markdown 中保守双保留或进入 Source Material；
+- 本地 Provider 当前只验证了单页、单并发；运行时准备不安装 NVIDIA 驱动、CUDA/WSL，也不自动选择 `llama-server` 二进制来源；
+- 其他 release 可以 `best-effort` 运行，但不属于已验证版本范围。
 
 ## 凭证与版权安全
 
@@ -229,6 +242,7 @@ lsdyna-manual parse configs/local.yaml \
 - [PageMap / SectionMap 契约](docs/pagemap-sectionmap.md)
 - [Parser 与 Provider 架构](docs/parser-interface.md)
 - [Corpus 格式](docs/corpus-format.md)
+- [Theory Corpus 合同](docs/theory-corpus-contract.md)
 - [Markdown 格式](docs/markdown-style.md)
 - [当前开发状态与回归记录](docs/project-status.md)
 

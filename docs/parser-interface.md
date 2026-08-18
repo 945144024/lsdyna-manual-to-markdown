@@ -4,9 +4,9 @@
 
 ## 1. 当前阶段目标
 
-当前主链路已经贯通到首版 Keyword Corpus：
+当前主链路已经贯通到 Keyword / Theory Corpus：
 
-> 给定一组具有代表性的 LS-DYNA Manual 页面，稳定生成带来源定位的 PageIR，再按 SectionMap 重建 SectionIR / KeywordIR 和保守 Markdown；解析或重建存在问题时形成明确的 ParseIssue，不得静默进入下游。
+> 给定一组具有代表性的 LS-DYNA Manual 页面，稳定生成带来源定位的 PageIR，再按 SectionMap 重建 SectionIR、KeywordIR / TheoryIR 和保守 Markdown；解析或重建存在问题时形成明确的 ParseIssue，不得静默进入下游。
 
 验证路径为：
 
@@ -14,9 +14,9 @@
 PDF page → 文档解析后端 → Provider Adapter → Canonical PageIR
 ```
 
-Section Reconstruction 与 Corpus Generation 已实现首版，但仍受真实分层回归约束。Theory 最终 Markdown、复杂条件排版和若干 OCR/renderer 缺陷仍在开发中。
+Section Reconstruction 与 Corpus Generation 已实现首版，但仍受真实分层回归约束。复杂条件排版和若干 OCR/renderer 边界仍需通过更广泛样本持续验证。
 
-本文档定义的 Canonical PageIR v0.1 是当前稳定接口；任何字段扩张都必须有真实页面证据和 focused tests（见第 6 节）。
+本文档定义的 Canonical PageIR v0.2 是当前稳定接口；它保留 v0.1 页面身份和普通表格读取能力，并增加真实 R17 页面所需的 rowspan / colspan 表达。任何后续字段扩张都必须有真实页面证据和 focused tests（见第 6 节）。
 
 ## 2. 设计目标
 
@@ -58,10 +58,10 @@ Section Reconstruction 与 Corpus Generation 已实现首版，但仍受真实�
 [ Reliable PageIR validation gate ]      结构校验；真实页面回归持续进行
       │
       ▼
-[ Section / Keyword Reconstruction ]     SectionIR、块级 KeywordIR、来源守恒
+[ Section Reconstruction ]               SectionIR、KeywordIR / TheoryIR、来源守恒
       │
       ▼
-[ Markdown / Manifest Output ]           保守 renderer 已实现；语义小节初版完成
+[ Markdown / Manifest Output ]           Keyword/Theory renderer、统一 manifest
 ```
 
 阶段边界原则：
@@ -129,6 +129,11 @@ class Section:
 Document Parser 负责页面级调度：读取 ParsePlan、生成 transport batch、调用 Provider、保存 raw artifact、调用 Adapter、生成并缓存 PageIR。
 
 语义解析单位是唯一的 `(document_id, pdf_page)`，不是 Keyword 或章节。SectionMap 中相邻章节可以共享边界页，因此候选页必须先按文档合并去重，再进入解析。
+
+若目标页面的 raw artifact 已全部存在并通过身份校验，`parse` 使用缓存 raw 离线重建
+PageIR，不启动远程或本地 Provider。源 PDF content stream 没有可见绘制/文本操作的页面
+记录 `SOURCE_BLANK_PAGE` info；非空源页得到空 PageIR 时记录 `PAGE_PARSE_EMPTY`，丢弃
+本次空结果并 fresh retry 一次，第二次仍为空则按页面解析失败处理。
 
 #### 4.2.1 ParsePlan
 
@@ -302,7 +307,7 @@ Adapter 不执行 LS-DYNA-specific 结构修复。真实 Provider 输出可能�
 - PDF 文本层定位为 Evidence / Validation Source：将视觉解析结果与文本层证据比对，冲突时记录 issue（如 `TEXT_LAYER_DIVERGENCE`），不得静默覆盖视觉解析内容；
 - 文本层不可用、页数不足或 `pdftotext` 执行失败时记录 `TEXT_LAYER_PAGE_UNAVAILABLE` 或 `TEXT_LAYER_COMPARISON_SKIPPED`，保留已生成的 PageIR；
 - `validation.text_layer_enabled`、`text_layer_sample_pages`、`text_layer_min_tokens` 与 `text_layer_min_visual_recall` 控制抽样与阈值；
-- v0.1 不定义任何自动修复规则；仅当某类错误模式被证明可以安全地确定性修复后，才允许增加 repair rule，且修复行为应记 issue 说明。
+- 不根据文本层或模型常识自动改写 PageIR 原文；只有被真实样本证明安全的确定性结构规则才允许进入重建流程，且必要时记录 issue 说明。
 
 ### 4.4 Section / Keyword Reconstruction
 
@@ -325,13 +330,43 @@ Adapter 不执行 LS-DYNA-specific 结构修复。真实 Provider 输出可能�
 
 Card 表头无有效槽位、缺少 Variable 行或出现重复语义行时分别记录 `CARD_DEFINITION_SLOT_HEADER_INVALID`、`CARD_DEFINITION_VARIABLE_ROW_MISSING` 或 `CARD_DEFINITION_ROW_AMBIGUOUS`，同时保留原表。Variable Description 无法匹配 Card 变量目录时记录 `VARIABLE_DESCRIPTION_UNMATCHED_TITLE`；没有 Card 目录但存在明确 `VARIABLE | DESCRIPTION` 表头时可索引变量，同时记录 `VARIABLE_DESCRIPTION_CATALOG_UNAVAILABLE`。唯一 O/0 关联记录 `VARIABLE_IDENTIFIER_CONFUSABLE_MATCH`，源文本保持不变。Markdown renderer 输出 Description、Purpose、Options、Card Definitions、Variable Descriptions、Remarks 和 References；跨页续表仅按显式或强连续形状合并。全部规则使用确定性代码；无法可靠确定的结构保留原始块并记 issue，不预设第二个 LLM 阶段。
 
+### 4.5 Theory Reconstruction
+
+Theory 使用与 Keyword 相同的 SectionIR 和 block 来源身份，但不进入 KeywordIR。
+TheoryIR 已实现以下稳定字段：
+
+```python
+class TheoryIR:
+    document_id: str              # 固定为 theory
+    section_id: str
+    section_number: str | None
+    title: str
+    parent_section_id: str | None
+    source_pages: list[SourcePage]
+    owned_sources: list[BlockSourceRef]
+    content_blocks: list[SourcedBlock]
+    ignored_blocks: list[SourcedBlock]
+    issues: list[ParseIssue]
+    status: str
+```
+
+Theory SectionMap 候选范围按数字章节深度终止；父子候选范围允许重叠，并以
+`THEORY_HIERARCHICAL_PAGE_OVERLAP` 记录为信息证据。TheoryIR 在线性 block 流中查找
+唯一的“章节号 + 标题”anchor，并从该 anchor 拥有到下一个 Theory 标题 anchor 之前：
+父章节因此只保留首个子标题前的 introduction，兄弟章节在下一标题处交接。成功切分
+记录 `THEORY_BOUNDARY_RESOLVED`；找不到唯一 anchor 时保守保留候选内容并记录
+`THEORY_TITLE_ANCHOR_MISSING`。页眉页脚进入 `ignored_blocks`，全部归属用
+`owned_sources` 保持 block accounting。TheoryIR 已用于重建和回归检测，并已接入
+Theory Markdown renderer 与统一 manifest；完整输出规则见
+`docs/theory-corpus-contract.md`。
+
 ## 5. Header 与 Footer 的下游使用
 
 Reconstruction 根据跨页重复模式与 Manual 结构判断哪些页眉页脚内容应清理，哪些内容可用于 Keyword 归属核对与 Manual 页码恢复。
 
-## 6. Canonical PageIR v0.1
+## 6. Canonical PageIR v0.2
 
-当前代码已实现 v0.1 数据模型、JSON 序列化与基础结构校验。这里“v0.1”是当前软件接口边界；它已经用于真实页面回归，但在下一次正式发布前仍允许通过兼容方式补充字段。
+当前代码已实现 v0.2 数据模型、JSON 序列化与表格 span 结构校验。`PageIR.from_dict` 仍可读取 v0.1 artifact；重新保存时统一写出 v0.2。PageMap / SectionMap 的 v0.1 页面身份和候选范围契约不变。
 
 ### 6.1 PageIR
 
@@ -366,10 +401,14 @@ class Cell:
     text: str
     row: int
     column: int
+    rowspan: int = 1
+    colspan: int = 1
 
 class TableBlock:
     rows: list[list[Cell]]
 ```
+
+`rows` 保存逻辑单元，而不是把 rowspan / colspan 覆盖的格子复制为新的源单元。`row` / `column` 是逻辑单元左上角坐标；`rowspan` / `colspan` 必须为正整数。下游需要矩形访问时使用确定性的 `table_grid_rows()` 投影：锚点保留原文，覆盖位置使用空 synthetic cell，不复制源文本。这样既保留原始表格结构，也不让现有行式语义规则猜测跨行/跨列内容。
 
 ### 6.4 bbox
 
@@ -394,25 +433,26 @@ class ParseIssue:
 
 ### 6.6 字段约束
 
-v0.1 不引入以下字段；是否需要由真实页面验证结论决定：
+v0.2 仍不引入以下字段：
 
-- rowspan / colspan；
 - cell 级 bbox；
 - reading order；
 - source text 逐块保留；
 - 数值 confidence 或其他 provenance 字段。
 
+span 校验发现非法值、越界或覆盖重叠时分别记录 `PAGEIR_INVALID_TABLE_SPAN`、`PAGEIR_TABLE_SPAN_OUT_OF_BOUNDS` 或 `PAGEIR_TABLE_SPAN_OVERLAP`。Adapter 无法解析 HTML span 属性时记录 `TABLE_SPAN_INVALID`；合法 span 不再产生 `TABLE_STRUCTURE_UNCERTAIN`。
+
 ## 7. ParseIssue 生命周期
 
 各阶段均可产生 issue，随 PageIR 与 SectionMap 向下游传递，最终汇入 `reports/issues.jsonl`（字段定义见 `corpus-format.md`），并影响条目 `status`。当前登记的 code：
 
-- Pipeline / Build：`UNVERIFIED_RELEASE`、`DOCUMENT_INGEST_FAILED`、`PARSE_NOT_IMPLEMENTED`；
+- Pipeline / Build：`UNVERIFIED_RELEASE`、`DOCUMENT_INGEST_FAILED`；
 - Inspection：`SECTION_BOUNDARY_UNCERTAIN`、`TOC_ENTRY_UNRESOLVED`、`ANCHOR_CONFLICT`、`TOC_PAGE_TITLE_NOT_FOUND`；`MANUAL_PAGE_NOT_FOUND` 为预留 code；
-- Parsing：`PAGE_PARSE_FAILED`；
-- Adapter：`TABLE_STRUCTURE_UNCERTAIN`、`READING_ORDER_AMBIGUOUS`、`MATH_PARSE_WARNING`；
-- PageIR / Validation：`PAGEIR_DOCUMENT_IDENTITY_MISMATCH`、`PAGEIR_INVALID_PDF_PAGE`、`PAGEIR_PAGE_IDENTITY_MISMATCH`、`PAGEIR_INVALID_BBOX`、`PAGEIR_INVALID_TABLE_ROW`、`PAGEIR_INVALID_TABLE_COLUMN`、`PAGEIR_INVALID_ISSUE_SEVERITY`；
-- Reconstruction：`SECTION_PAGE_RANGE_MISMATCH`、`SECTION_PAGEIR_MISSING`、`SECTION_SHARED_BOUNDARY_PAGE`、`SECTION_CONTENT_EMPTY`、`KEYWORD_BOUNDARY_RESOLVED`、`KEYWORD_BOUNDARY_AMBIGUOUS`、`KEYWORD_CONTENT_EMPTY`、`KEYWORD_BLOCK_ASSIGNED_MULTIPLE_TIMES`、`KEYWORD_BLOCK_ACCOUNTING_MISMATCH`、`CARD_DEFINITION_SLOT_HEADER_INVALID`、`CARD_DEFINITION_VARIABLE_ROW_MISSING`、`CARD_DEFINITION_ROW_AMBIGUOUS`、`VARIABLE_DESCRIPTION_UNMATCHED_TITLE`、`VARIABLE_DESCRIPTION_CONTINUATION_ORPHAN`；
-- Validation：`TEXT_LAYER_DIVERGENCE`、`TEXT_LAYER_PAGE_UNAVAILABLE`、`TEXT_LAYER_COMPARISON_SKIPPED`。
+- Parsing：`PAGE_PARSE_FAILED`、`PAGE_PARSE_EMPTY`、`SOURCE_BLANK_PAGE`；
+- Adapter：`TABLE_STRUCTURE_UNCERTAIN`（仅保留给无法形成确定投影的结构）、`TABLE_SPAN_INVALID`、`READING_ORDER_AMBIGUOUS`、`MATH_PARSE_WARNING`；
+- PageIR / Validation：`PAGEIR_DOCUMENT_IDENTITY_MISMATCH`、`PAGEIR_INVALID_PDF_PAGE`、`PAGEIR_PAGE_IDENTITY_MISMATCH`、`PAGEIR_INVALID_BBOX`、`PAGEIR_INVALID_TABLE_ROW`、`PAGEIR_INVALID_TABLE_COLUMN`、`PAGEIR_INVALID_TABLE_SPAN`、`PAGEIR_TABLE_SPAN_OUT_OF_BOUNDS`、`PAGEIR_TABLE_SPAN_OVERLAP`、`PAGEIR_INVALID_ISSUE_SEVERITY`；
+- Reconstruction：`SECTION_PAGE_RANGE_MISMATCH`、`SECTION_PAGEIR_MISSING`、`SECTION_SHARED_BOUNDARY_PAGE`、`SECTION_CONTENT_EMPTY`、`KEYWORD_BOUNDARY_RESOLVED`、`KEYWORD_BOUNDARY_AMBIGUOUS`、`KEYWORD_CONTENT_EMPTY`、`KEYWORD_BLOCK_ASSIGNED_MULTIPLE_TIMES`、`KEYWORD_BLOCK_ACCOUNTING_MISMATCH`、`CARD_DEFINITION_SLOT_HEADER_INVALID`、`CARD_DEFINITION_VARIABLE_ROW_MISSING`、`CARD_DEFINITION_ROW_AMBIGUOUS`、`CARD_DEFINITION_CONTINUATION_ORPHAN`、`VARIABLE_DESCRIPTION_CATALOG_UNAVAILABLE`、`VARIABLE_DESCRIPTION_UNMATCHED_TITLE`、`VARIABLE_DESCRIPTION_CONTINUATION_ORPHAN`、`VARIABLE_IDENTIFIER_CONFUSABLE_MATCH`、`THEORY_HIERARCHICAL_PAGE_OVERLAP`、`THEORY_BOUNDARY_RESOLVED`、`THEORY_TITLE_ANCHOR_MISSING`、`THEORY_CONTENT_EMPTY`；
+- Validation：`TEXT_LAYER_DIVERGENCE`、`TEXT_LAYER_FORMULA_REPRESENTATION_DIVERGENCE`、`TEXT_LAYER_PAGE_UNAVAILABLE`、`TEXT_LAYER_COMPARISON_SKIPPED`。
 
 `code` 为开放集合，新增 code 应在实现处登记语义。
 
@@ -464,7 +504,7 @@ lsdyna-manual sample-regression \
 - Card 条件说明与表格的关联是否可恢复；
 - 跨页结构在 raw result 中的实际表现形式。
 
-验证结论用于决定 PageIR 字段与 Reconstruction 算法的下一步修订，不用于评测模型综合分数。当前暂停点和实际页数见 `docs/project-status.md`。
+验证结论用于决定 PageIR 字段与 Reconstruction 算法的下一步修订，不用于评测模型综合分数。当前样本状态、实际页数和后续验收顺序见 `docs/project-status.md`。
 
 ## 9. 配置与安全
 
@@ -501,7 +541,7 @@ parser:
   #   auto_start_server: true
 ```
 
-配置模型使用 Pydantic `SecretStr`，Provider 的 dataclass 也禁止在 `repr` 中显示密钥。缺少 Key 时，只有 Provider 实例化失败；不调用远程 OCR 的 `inspect` 和当前 ingest-only `build` 可以在 `api_key: null` 下运行。
+配置模型使用 Pydantic `SecretStr`，Provider 的 dataclass 也禁止在 `repr` 中显示密钥。缺少 Key 时，只有 Provider 实例化失败；`inspect` 可以在 `api_key: null` 下运行。一键 `build` 若所有请求 raw 已缓存也可离线继续，否则远程模式必须提供 Key。
 
 安全不变量：
 

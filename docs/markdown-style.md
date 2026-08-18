@@ -1,15 +1,15 @@
 # Markdown 格式规范
 
-本文档定义 `lsdyna-manual-builder` 生成的 Keyword Markdown 文档的组织结构与格式规则，是 `markdown` 模块 renderer 的实现依据。
+本文档定义 `lsdyna-manual-builder` 生成的 Keyword 与 Theory Markdown 文档的组织结构与格式规则，是 `markdown` 模块 renderer 的实现依据。
 
-> 本文档描述目标 Corpus Markdown 格式。当前 v0.1 renderer 按 SectionMap 聚合 PageIR，经 KeywordIR 做共享页块级归属，并识别 Description、Purpose、Option、Card、变量说明区域、Remarks 与 References；CardIR 支持 summary / definition、合并的 Variable/Type/Default 行、点号子卡、字段槽位和条件文本，VariableDescriptionIR 支持表格行、文本前缀、跨页续表、值表及变量族映射。等价 summary 和完全重复说明只在渲染层去重，来源仍参与 block accounting；不确定结构保留 Source Material fallback。Provider raw Markdown 不是最终产品格式。
+> 本文档描述当前 Corpus Markdown 格式。Keyword renderer 识别 Description、Purpose、Option、Card、变量说明区域、Remarks 与 References；等价 summary 和完全重复说明只在渲染层去重，来源仍参与 block accounting。Theory renderer 按数字层级与 title-anchor 所有权输出章节文件。PageIR 表格 span 在语义层投影为不复制源文本的矩形表格，无法确认的 Keyword 结构保留 Source Material fallback。Provider raw Markdown 不是最终产品格式。
 
 ## 1. 基本规则
 
 - 原文保持：最终 Markdown 保持 Manual 原始语言。Parser 与 LLM 不得添加中文翻译、参数类型重复说明、默认值重复说明、工程解释、推断结论或模型世界知识。
-- 条目即文件：Manual 中作为一个完整参考条目出现的内容对应一个 Markdown 文件，同一条目内的基础 Keyword 与 Option 保存在同一文件中。
-- 生成范围：仅 SectionMap 中 `kind == "keyword"` 的条目生成 Markdown；非 Keyword 文档章节不生成文件。
-- 目录层级：`markdown/volume-N/family/keyword.md`，字段与路径规则见 `corpus-format.md`。
+- 条目即文件：Keyword 的完整参考条目和 Theory 的数字章节分别对应一个 Markdown 文件；同一 Keyword 内的基础形式与 Option 保存在同一文件中。
+- 生成范围：SectionMap 中 `kind == "keyword"` 与 `kind == "theory"` 的条目均生成 Markdown，并共用同一个 manifest。
+- 目录层级：Keyword 使用 `markdown/volume-N/family/keyword.md`，Theory 使用 `markdown/theory/<section_id>.md`，字段与路径规则见 `corpus-format.md`。
 - 来源页码：Front Matter 的 `source_pages` 来自 SectionMap 候选范围，`manual_page` 可能重复或为 `null`，应原样输出，不做去重、补齐或“修正”；Provider raw Markdown 不直接作为本节定义的最终 Keyword Markdown。
 - 图片：v0.1 不保存、不 OCR、不理解图片内容，仅输出占位符。
 
@@ -135,6 +135,8 @@ Card 表遵循 Manual 实际结构。常见数据行为 Variable、Type、Defaul
 
 Card 表应保留 Manual 显示的全部字段槽位，包括空字段。标准 8-field Card 保留全部 8 个位置，空位置具有排版与字段位置意义，不得截断。
 
+PageIR 的 `rowspan` / `colspan` 是源表格的逻辑结构。Markdown pipe table 无法表达合并单元格，因此 renderer 在进入 KeywordIR 行式规则和最终 Markdown 时使用确定性矩形投影：锚点单元格只保留一次，跨越位置为空，不复制变量或说明文本。源 PageIR 与 raw artifact 仍保留完整 span 证据。
+
 当 OCR 将 `Variable`、`Type`、`Default` 合并到一行或单元格内时，只在 Card 槽位和字段类型形状同时成立时拆分。Card summary 仅在其变量槽位与 definition 完全一致且没有提供 definition 缺失字段时省略；否则两者都保留。
 
 条件卡（如 Card 1a、Card 1b）作为独立三级小节与独立表格输出。条件说明只能来自 Manual，不得由 LLM 根据参数关系生成。
@@ -188,3 +190,27 @@ EQ. / NE. / LT. / GT. 等操作符只做结构化排版，操作符原样保留�
 ### 4.7 References
 
 References 小节仅收录 Manual 明确出现的交叉引用，不得根据模型知识补充相关 Keyword。
+
+## 5. Theory Markdown
+
+Theory Markdown 使用章节级 Front Matter：
+
+```yaml
+---
+document_id: theory
+manual_type: theory
+section_id: "22.3.1"
+section_number: "22.3.1"
+title: "Example Theory Section"
+parent_section_id: "22.3"
+manual_release: "R17"
+source_pages:
+  - pdf_page: 245
+    manual_page: "22-17"
+---
+```
+
+正文以章节标题作为一级标题，随后按 PageIR 的确定性 reading order 保留正文、
+表格、公式和图片占位。Theory 不生成摘要、Card、变量目录、解释性文本或模型推断；
+无法可靠排序或归类的内容进入 `## Source Material` 并记录 warning。共享边界页、
+父子章节和 block accounting 的完整规则见 `docs/theory-corpus-contract.md`。

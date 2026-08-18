@@ -7,4 +7,5 @@
 - 不得复制、截取或分发 LS-DYNA 官方 Manual 的原文、图片或 PDF 片段；
 - Keyword、卡片、公式和跨页排版样本必须由开发者编写或程序生成；
 - 合成用例可以模拟不同 release 的版式差异，例如重复印刷页码、无页脚区域和 TOC 页码错误；
+- 一键 `build`、checkpoint 恢复和 Keyword/Theory 统一 manifest 的端到端测试必须使用合成输入，不得依赖开发机上的官方 Manual；
 - fixture 不得包含真实 API Key、Authorization header 或可用的 signed URL。

@@ -4,15 +4,15 @@
 
 ## 1. 目标与范围
 
-用户提供合法获得的指定版本 LS-DYNA Keyword Manual 和/或 Theory Manual，并配置自己的解析 API。项目在本地转换为结构稳定、来源可追溯、适合 LLM 读取的 Markdown Corpus。
+用户提供合法获得的指定版本 LS-DYNA Keyword Manual 和/或 Theory Manual，并配置自己的解析 API 或本地模型运行时。项目在本地转换为结构稳定、来源可追溯、适合 LLM 读取的 Markdown Corpus。
 
-本文档定义目标 Corpus 格式。当前 v0.1 已实现 `PageIR → SectionIR → 块级 KeywordIR → 保守 Markdown` 重建，并由 `reconstruct` 命令生成本规范中的 Corpus 产物；Description、Card summary / definition 分区、合并 Card 行恢复、字段槽位、Keyword 变量目录、Card 条件、跨页续表和 Variable Description 语义小节已进入重建流程。未知结构仍保留为 Source Material 并可能产生 warning；Theory Markdown、span-aware Table 和若干 OCR 边界仍待后续契约扩展。兼容保留的 `build` 命令仍只生成 ingest 骨架。
+本文档定义目标 Corpus 格式。当前 PageIR v0.2 已支持 `PageIR → SectionIR → KeywordIR/TheoryIR → 保守 Markdown` 重建。Keyword 的 Card 与 Variable Description 语义结构、Theory 的数字层级与 title-anchor 所有权、两类 Markdown renderer 和统一 manifest 均已接入。PageIR 保存表格 rowspan / colspan，Markdown 语义层使用不复制源文本的确定性矩形投影；无法确认的 Keyword 结构仍保留为 Source Material。`build` 一键执行 inspection、可续跑 parsing 和 reconstruction。
 
 v0.1 是格式转换与结构重建工具，不是翻译器、总结器或技术内容改写器。最终 Markdown 保持 Manual 原始语言，Parser 与 LLM 不得添加解释、翻译、工程常识、推断结论或原文不存在的技术信息。
 
 v0.1 不涉及 RAG、MCP、`.k` 文件解析、Keyword Validator、LSP、Embedding、知识图谱与多版本比较。
 
-实际回归状态、已知 Markdown 问题和当前暂停的本地 OCR 样本见 `docs/project-status.md`。Corpus 规范描述产物形状，不代表每份输入 PDF 都能无 warning 生成完整语义条目。
+实际回归状态和已知 Markdown 边界见 `docs/project-status.md`。Corpus 规范描述产物形状，不代表每份输入 PDF 都能无 warning 生成完整语义条目。
 
 ## 2. 源文档结构背景
 
@@ -40,8 +40,11 @@ corpus_root/
 │   │   ├── EOS/
 │   │   ├── MAT/
 │   │   └── ...
-│   └── volume-3/
-│       └── ...
+│   ├── volume-3/
+│   │   └── ...
+│   └── theory/
+│       ├── 2.5.md
+│       └── 22.3.1.md
 └── reports/
     ├── summary.json
     ├── issues.jsonl
@@ -50,6 +53,10 @@ corpus_root/
 
 Markdown 文档按 `volume → family → keyword` 三级目录组织。Volume 层应保留，以维持源文档的卷级来源边界；Family 层应保留，用于控制单目录规模并便于人工浏览。全部 Markdown 平铺的方案不采用。
 
+Theory 文档使用独立的 `markdown/theory/<section_id>.md` 路径。Theory 的数字层级、
+父子关系和 block 保留规则见 `docs/theory-corpus-contract.md`，不套用 Keyword 的
+family、Card 或变量目录结构。
+
 Family 目录不生成 `index.md`。机器索引由 `manifest.jsonl` 承担，人工浏览由目录结构承担。
 
 ### 3.1 条目与文件的关系
@@ -57,6 +64,9 @@ Family 目录不生成 `index.md`。机器索引由 `manifest.jsonl` 承担，�
 Manual 中作为一个完整参考条目出现的内容对应一个 Markdown 文件。
 
 以基础 Keyword 加 OPTION 方式统一描述的条目，其基础形式与全部 Option 保存在同一个 Markdown 文件中，不得因存在 Option 自动拆分文件。仅当 Manual 将两个名称作为两个独立参考条目分别描述时，才生成两个文件。
+
+Theory 条目按 SectionMap 的 `kind == "theory"` 单位生成文件；相邻父子章节不合并，
+也不因共享边界页自动拆分或删除原文。
 
 ## 4. 字段定义
 
@@ -73,6 +83,10 @@ Manual 中作为一个完整参考条目出现的内容对应一个 Markdown 文
 | `source_pages` | list[object] | 来源页列表，每项含 `pdf_page` 与 `manual_page` |
 | `markdown_path` | string \| null | 输出 Markdown 相对路径，未生成可靠 Markdown 时为 `null` |
 | `status` | string | `success` / `warning` / `failed` 之一 |
+
+Theory 记录使用 `section_id`、`section_number`、`title` 和 `parent_section_id` 替代
+Keyword 专用字段，具体 JSON 形状见 `docs/theory-corpus-contract.md`。两种记录共用
+同一个 manifest，不建立第二套索引。
 
 `source_pages` 每项的定义：
 
@@ -188,6 +202,7 @@ Manifest 是 Corpus 级权威索引。每条记录只包含身份、来源、路
 
 - `document_id`、`manual_type`、`volume`、`pdf_page`、`manual_page`：问题发生的位置；
 - `keyword_id`：问题归属的 Keyword。解析问题可能发生在 Keyword 边界恢复之前，无法归属时允许为 `null`；
+- `section_id`：问题归属的 SectionMap/Theory 章节；Keyword 问题可为空，Theory 问题使用稳定章节 ID；
 - `severity`：`info` / `warning` / `error` 之一；
 - `code`：离散问题标记，取值应为 `parser-interface.md` 中登记的 issue code；
 - `message`：问题说明。
