@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from lsdyna_manual.providers import local_runtime
 from lsdyna_manual.config import LocalProviderConfig, ParserConfig
 from lsdyna_manual.providers.base import ProviderError
 from lsdyna_manual.providers.local_runtime import LocalRuntimeError, LocalRuntimeManager
@@ -1028,6 +1029,67 @@ def test_local_runtime_does_not_install_without_explicit_authorization(
         manager.ensure_ready(allow_install=False)
 
     assert install_calls == []
+
+
+def test_local_runtime_uses_windows_default_executables(monkeypatch, tmp_path):
+    monkeypatch.setattr(local_runtime, "_is_windows", lambda: True)
+    manager = LocalRuntimeManager(LocalProviderConfig(runtime_dir=tmp_path / "runtime"))
+
+    paths = manager.paths()
+
+    assert paths.llama_server == tmp_path / "runtime" / "bin" / "llama-server.exe"
+    assert paths.paddleocr_python == (
+        tmp_path / "runtime" / "venv" / "Scripts" / "python.exe"
+    )
+
+
+def test_local_runtime_passes_native_windows_paths_without_wslpath(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(local_runtime, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        local_runtime.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("native Windows must not call wslpath"),
+    )
+    executable = tmp_path / "llama-server.exe"
+    model = tmp_path / "models" / "model.gguf"
+
+    assert LocalRuntimeManager._path_argument(executable, model) == str(model)
+
+
+def test_local_runtime_checks_modules_with_isolated_home(monkeypatch, tmp_path):
+    manager = LocalRuntimeManager(LocalProviderConfig(runtime_dir=tmp_path / "runtime"))
+    python = tmp_path / "python.exe"
+    python.touch()
+    captured = {}
+
+    def fake_run(_command, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(local_runtime.subprocess, "run", fake_run)
+
+    assert manager._modules_available(python)
+    expected_home = str((tmp_path / "runtime" / "home").resolve())
+    assert captured["env"]["HOME"] == expected_home
+    assert captured["env"]["USERPROFILE"] == expected_home
+
+
+def test_local_worker_keeps_user_caches_inside_runtime(tmp_path):
+    provider = object.__new__(PaddleOCRVLLocalProvider)
+    provider.local_config = LocalProviderConfig(runtime_dir=tmp_path / "runtime")
+    provider.paths = SimpleNamespace(paddlex_cache=tmp_path / "runtime" / "paddlex")
+
+    environment = provider._worker_environment()
+
+    expected_home = str((tmp_path / "runtime" / "home").resolve())
+    assert environment["HOME"] == expected_home
+    assert environment["USERPROFILE"] == expected_home
+    assert environment["PADDLE_PDX_CACHE_HOME"] == str(
+        (tmp_path / "runtime" / "paddlex").resolve()
+    )
+    assert environment["PADDLE_PDX_MODEL_SOURCE"] == "bos"
 
 
 def test_local_runtime_does_not_download_layout_model_without_authorization(

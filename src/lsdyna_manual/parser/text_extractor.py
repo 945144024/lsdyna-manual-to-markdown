@@ -34,10 +34,13 @@ class PopplerLayoutExtractor(TextExtractor):
         result = subprocess.run(
             [binary, "-layout", str(pdf_path), "-"],
             capture_output=True,
-            text=True,
             check=True,
         )
-        pages = result.stdout.split("\f")
+        # Poppler writes UTF-8 regardless of the active Windows ANSI code page.
+        # Decode explicitly so non-ASCII Manual text never falls back to GBK or
+        # another locale-dependent codec. Preserve undecodable bytes visibly.
+        output = result.stdout.decode("utf-8", errors="replace")
+        pages = output.split("\f")
         if pages and pages[-1] == "":
             pages = pages[:-1]
         return pages

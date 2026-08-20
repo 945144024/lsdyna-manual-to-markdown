@@ -6,6 +6,9 @@
 数字层级与 title-anchor 所有权重建、Markdown renderer、统一 manifest 接入和
 端到端输出均已按本合同实现。
 
+R17 完整构建包含 582 个 Theory SectionMap 条目；统一 manifest、稳定路径、父子关系
+和 block accounting 已通过完整构建及两组独立样本验证。
+
 ## 1. 核心决定
 
 - 一个 `SectionMap.kind == "theory"` 的条目对应一个 Theory Markdown 文件。

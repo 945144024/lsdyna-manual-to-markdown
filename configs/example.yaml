@@ -44,7 +44,8 @@ parser:
   # max_batch_pages: 1. Keep this block commented when using the remote provider.
   # local:
   #   runtime_dir: "./.runtime/paddleocr-local"
-  #   llama_server_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/llama-server.exe"
+  #   llama_server_path: "C:/Users/<user>/.cache/lsdyna-manual-to-markdown/llama-server.exe"
+  #   # Linux/WSL example: "/opt/llama.cpp/llama-server"
   #   # Instead of an existing path, configure one explicit binary source.
   #   # llama_server_download_url: "https://example.invalid/llama-server"
   #   # llama_server_archive_url: "https://example.invalid/llama-server.zip"
@@ -54,12 +55,13 @@ parser:
   #   llama_server_port: 8111
   #   model_source: "bos"  # PaddleX auxiliary layout-model hoster
   #   paddlex_cache_dir: "./.runtime/paddleocr-local/paddlex"
-  #   model_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/PaddleOCR-VL-1.6-GGUF.gguf"
-  #   mmproj_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+  #   model_path: "C:/Users/<user>/.cache/lsdyna-manual-to-markdown/PaddleOCR-VL-1.6-GGUF.gguf"
+  #   mmproj_path: "C:/Users/<user>/.cache/lsdyna-manual-to-markdown/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
   #   auto_prepare_runtime: false
   #   auto_start_server: true
   #   max_concurrency: 1
-  #   paddleocr_python: "./.runtime/paddleocr-local/venv/bin/python"
+  #   paddleocr_python: "./.runtime/paddleocr-local/venv/Scripts/python.exe"
+  #   # Linux/WSL example: "./.runtime/paddleocr-local/venv/bin/python"
 
 output:
   corpus_dir: "./workspace/run_r17"

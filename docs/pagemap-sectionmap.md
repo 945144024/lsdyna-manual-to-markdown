@@ -1,8 +1,11 @@
 # PageMap / SectionMap v0.1 契约
 
-本文档冻结 Document Inspection 阶段的两个稳定中间产物。JSON Schema 位于 `docs/schemas/`，回归基线位于 `docs/regression-baseline-v0.1.json`。
+本文档冻结 Document Inspection 阶段的两个稳定中间产物。JSON Schema 位于
+`schemas/`，回归基线位于 `regression-baseline-v0.1.json`。
 
-该契约自 2026-08-17 起冻结。PageIR v0.2、SectionIR、KeywordIR、TheoryIR 和 Markdown 语义层均在本契约之上实现，不改变页面身份或 SectionMap 候选范围语义。完整开发状态见 `docs/project-status.md`。
+该契约自 2026-08-17 起冻结。PageIR v0.2、SectionIR、KeywordIR、TheoryIR 和
+Markdown 语义层均在本契约之上实现，不改变页面身份或 SectionMap 候选范围语义。
+完整开发状态见 `project-status.md`。
 
 ## 支持范围
 
@@ -10,6 +13,10 @@
 - 已验证并承诺支持官方存在的 R14、R15、R16、R17 Theory Manual；
 - 其他 release 不拒绝运行，标记为 `best-effort` / `UNVERIFIED_RELEASE`，但不保证 PageMap / SectionMap 质量；
 - 一次运行只允许一个 release，可输入任意非空文档子集：单册、任意 Keyword 卷组合、Keyword + Theory，或 Theory-only；
+
+四册 R17 Inspection 已在 Linux/WSL 和原生 Windows Poppler 上分别执行，PageMap、
+SectionMap 计数与质量结论一致。Windows stdout 固定按 UTF-8 解码，避免宿主代码页
+改变 TOC、页脚或标题证据。
 
 ## 文档身份
 
@@ -134,7 +141,7 @@ Python API 只接受显式 `ManualDocument` 和 `document_id`。`volume` 不得�
 候选回归：
 
 ```bash
-lsdyna-manual-regression \
+manual-to-markdown-regression \
   --manuals-dir manuals \
   --output-dir workspace/regression \
   --render
@@ -143,7 +150,7 @@ lsdyna-manual-regression \
 严格比对冻结基线：
 
 ```bash
-lsdyna-manual-regression \
+manual-to-markdown-regression \
   --manuals-dir manuals \
   --output-dir workspace/regression \
   --baseline docs/regression-baseline-v0.1.json \

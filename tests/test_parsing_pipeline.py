@@ -68,12 +68,12 @@ def test_run_parsing_limits_pages_and_resumes_valid_checkpoint(tmp_path):
         f"""manual:
   release: "R17"
   documents:
-    - path: "{manual}"
+    - path: "{manual.as_posix()}"
 parser:
   api_key: null
   max_batch_pages: 2
 output:
-  corpus_dir: "{corpus}"
+  corpus_dir: "{corpus.as_posix()}"
 """,
         encoding="utf-8",
     )

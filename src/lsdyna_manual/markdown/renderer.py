@@ -523,7 +523,7 @@ class MarkdownRenderer:
             "options": section.option_names,
             "volume": section.volume,
             "source_pages": _source_pages(section),
-            "markdown_path": str(relative_path) if section.content_blocks() else None,
+            "markdown_path": relative_path.as_posix() if section.content_blocks() else None,
             "status": section.status,
         }
         if not section.content_blocks():
@@ -617,7 +617,7 @@ class TheoryMarkdownRenderer:
             "title": section.title,
             "parent_section_id": section.parent_section_id,
             "source_pages": [page.to_dict() for page in section.source_pages],
-            "markdown_path": str(relative_path) if section.content_blocks else None,
+            "markdown_path": relative_path.as_posix() if section.content_blocks else None,
             "status": section.status,
         }
         if not section.content_blocks:

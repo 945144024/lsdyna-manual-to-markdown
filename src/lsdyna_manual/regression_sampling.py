@@ -717,7 +717,7 @@ def detect_sample_manifest(
             if item is None:
                 continue
             record["markdown_path"] = (
-                str(item.markdown_path.relative_to(output_dir))
+                item.markdown_path.relative_to(output_dir).as_posix()
                 if item.markdown_path is not None
                 else None
             )
@@ -865,6 +865,52 @@ def run_sampling(
     return manifest, report
 
 
+def run_manifest_detection(
+    *,
+    manifest_path: Path,
+    manuals_dir: Path,
+    release: str,
+    intermediate_dir: Path,
+    pageir_root: Path,
+    output_dir: Path,
+) -> tuple[dict, dict]:
+    """Detect an existing frozen sample without selecting replacement sections."""
+
+    manifest_path = Path(manifest_path)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read sample manifest {manifest_path}: {exc}") from exc
+    documents = _discover_documents(Path(manuals_dir), release)
+    load_sample_page_keys(
+        manifest_path,
+        release=release,
+        documents=documents,
+    )
+    navigation = load_navigation(Path(intermediate_dir))
+    missing = sorted(set(documents) - set(navigation))
+    if missing:
+        raise ValueError(
+            "SectionMap artifacts missing for configured documents: "
+            + ", ".join(missing)
+        )
+    report = detect_sample_manifest(
+        manifest=manifest,
+        documents=documents,
+        navigation=navigation,
+        pageir_root=Path(pageir_root),
+        output_dir=Path(output_dir),
+    )
+    write_sampling_outputs(manifest, report, Path(output_dir))
+    return manifest, report
+
+
+def sample_page_reference_count(manifest: Mapping) -> int:
+    """Return page references, retaining overlaps between sampled sections."""
+
+    return sum(len(sample.get("pdf_pages", [])) for sample in manifest.get("samples", []))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manuals-dir", type=Path, default=Path("manuals"))
@@ -886,6 +932,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--seed", type=int, default=20260817)
     parser.add_argument(
+        "--sample-manifest",
+        type=Path,
+        help="detect this frozen manifest instead of selecting a new sample",
+    )
+    parser.add_argument(
         "--anchor",
         action="append",
         default=[],
@@ -898,18 +949,30 @@ def main(argv: list[str] | None = None) -> int:
         if ":" not in value:
             parser.error(f"invalid --anchor {value!r}; expected DOCUMENT_ID:SECTION_ID")
         anchors.append(tuple(value.split(":", 1)))
-    manifest, report = run_sampling(
-        manuals_dir=args.manuals_dir,
-        release=args.release,
-        intermediate_dir=args.intermediate_dir,
-        pageir_root=args.pageir_dir,
-        output_dir=args.output_dir,
-        seed=args.seed,
-        anchor_sections=anchors,
-    )
+    if args.sample_manifest is not None:
+        if anchors:
+            parser.error("--anchor cannot be combined with --sample-manifest")
+        manifest, report = run_manifest_detection(
+            manifest_path=args.sample_manifest,
+            manuals_dir=args.manuals_dir,
+            release=args.release,
+            intermediate_dir=args.intermediate_dir,
+            pageir_root=args.pageir_dir,
+            output_dir=args.output_dir,
+        )
+    else:
+        manifest, report = run_sampling(
+            manuals_dir=args.manuals_dir,
+            release=args.release,
+            intermediate_dir=args.intermediate_dir,
+            pageir_root=args.pageir_dir,
+            output_dir=args.output_dir,
+            seed=args.seed,
+            anchor_sections=anchors,
+        )
     print(
         f"samples={manifest['summary']['sample_count']} "
-        f"pages={manifest['summary']['sample_pages']} "
+        f"pages={sample_page_reference_count(manifest)} "
         f"checked={report['summary']['checked_count']} "
         f"partial={report['summary']['partial_count']} "
         f"not_parsed={report['summary']['not_parsed_count']}"

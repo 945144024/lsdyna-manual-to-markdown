@@ -14,7 +14,9 @@
 PDF page → 文档解析后端 → Provider Adapter → Canonical PageIR
 ```
 
-Section Reconstruction 与 Corpus Generation 已实现首版，并完成 R17 分层样本、独立 holdout 和四册完整构建验证。复杂条件排版和若干 OCR/renderer 边界仍需结合完整报告中的真实页面持续收敛。
+Section Reconstruction 与 Corpus Generation 已实现，并完成 R17 分层样本、独立
+holdout 和四册完整构建验证。当前残留边界只有在 PageIR、Card catalog 或唯一标题
+锚点提供确定证据时才允许继续收敛；否则保留原始 block 和 issue。
 
 本文档定义的 Canonical PageIR v0.2 是当前稳定接口；它保留 v0.1 页面身份和普通表格读取能力，并增加真实 R17 页面所需的 rowspan / colspan 表达。任何后续字段扩张都必须有真实页面证据和 focused tests（见第 6 节）。
 
@@ -467,12 +469,16 @@ Inspection 的中间产物 `intermediate/<document_id>/issues.jsonl` 使用 `Ins
 
 ## 8. 分层语义回归
 
-语义规则开发仍使用独立的分层随机抽样 manifest：对 Volume I、II、III 和 Theory 分别按短章节（1～2 页）、中章节（3～6 页）、长章节（7～40 页）抽取默认 `3/4/3` 个 SectionMap 章节，并用少量显式 anchor 补充低频结构。manifest 固定 seed、源 PDF hash、SectionMap 章节身份和候选页范围，输出到 `workspace/regression/<release>/semantic-sample/sample_manifest.json`。除此之外，R17 已执行四册完整 ParsePlan 和 Corpus 构建验收；抽样回归用于快速、可复现的规则验证，不能替代完整构建报告。
+语义规则开发仍使用独立的分层随机抽样 manifest：对 Volume I、II、III 和 Theory 分别按短章节（1～2 页）、中章节（3～6 页）、长章节（7～40 页）抽取默认 `3/4/3` 个 SectionMap 章节，并用少量显式 anchor 补充低频结构。manifest 固定 seed、源 PDF hash、SectionMap 章节身份和候选页范围，输出到 `workspace/regression/<release>/semantic-sample/sample_manifest.json`。已审阅或包含人工 pinned section 的集合以 manifest 本身为唯一选择合同，后续检测必须使用 `--sample-manifest`，不得仅凭 seed 重新生成。除此之外，R17 已执行四册完整 ParsePlan 和 Corpus 构建验收；抽样回归用于快速、可复现的规则验证，不能替代完整构建报告。
+
+当前 Windows 跨平台验收合并固定样本与独立 holdout 后覆盖 419 个唯一页面，占完整
+R17 ParsePlan 的 5.1185%。全部页面与 WSL PageIR JSON 全等，覆盖普通/合并表格、
+公式、Figure、Keyword 和 Theory 边界。该抽样不等同于 Windows 全量 8,186 页重跑。
 
 抽样与检测命令：
 
 ```bash
-lsdyna-manual sample-regression \
+manual-to-markdown sample-regression \
   --manuals-dir manuals \
   --release R17 \
   --intermediate-dir workspace/regression/r17/intermediate \
@@ -480,6 +486,20 @@ lsdyna-manual sample-regression \
   --output-dir workspace/regression/r17/semantic-sample \
   --seed 20260817
 ```
+
+检测已有冻结 manifest：
+
+```bash
+manual-to-markdown sample-regression \
+  --manuals-dir manuals \
+  --release R17 \
+  --intermediate-dir workspace/regression/r17/intermediate \
+  --pageir-dir workspace/run_r17/parsing/pageir \
+  --output-dir workspace/regression/r17/semantic-sample-current \
+  --sample-manifest workspace/regression/r17/semantic-sample/sample_manifest.json
+```
+
+该模式校验 release 和源 PDF hash，原样保留冻结的章节/页面选择并重新生成 detection 与 Markdown；不得与 `--anchor` 同时使用。
 
 每个样本检测：
 
@@ -537,13 +557,13 @@ parser:
   # max_batch_pages: 1  # local mode enforces this value
   # local:
   #   runtime_dir: "./.runtime/paddleocr-local"
-  #   paddleocr_python: "./.runtime/paddleocr-local/venv/bin/python"
-  #   llama_server_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/llama-server.exe"
+  #   paddleocr_python: "./.runtime/paddleocr-local/venv/Scripts/python.exe"
+  #   llama_server_path: "C:/Users/<user>/.cache/lsdyna-manual-to-markdown/llama-server.exe"
   #   llama_server_url: "http://127.0.0.1:8111/v1"
   #   model_source: "bos"  # huggingface / modelscope / aistudio / null are also valid
   #   paddlex_cache_dir: "./.runtime/paddleocr-local/paddlex"
-  #   model_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/PaddleOCR-VL-1.6-GGUF.gguf"
-  #   mmproj_path: "/mnt/c/Users/<user>/.cache/lsdyna-manual-builder/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+  #   model_path: "C:/Users/<user>/.cache/lsdyna-manual-to-markdown/PaddleOCR-VL-1.6-GGUF.gguf"
+  #   mmproj_path: "C:/Users/<user>/.cache/lsdyna-manual-to-markdown/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
   #   auto_prepare_runtime: false
   #   auto_start_server: true
 ```

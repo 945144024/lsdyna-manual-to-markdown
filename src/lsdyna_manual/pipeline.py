@@ -184,7 +184,7 @@ def run_inspection(
     """Inspect any configured same-release combination of Manual documents."""
     config_path = Path(config_path)
     config = load_config(config_path)
-    log(f"lsdyna-manual-builder {__version__}")
+    log(f"LS-DYNA Manual to Markdown {__version__}")
     log(f"[1/3] load config: {config_path}")
 
     release, documents = _resolve_documents(config)
@@ -247,7 +247,7 @@ def _load_parse_navigation(
         if not pagemap_path.is_file() or not sectionmap_path.is_file():
             raise ConfigError(
                 f"inspection artifacts missing for {document.document_id}; "
-                "run 'lsdyna-manual inspect' first"
+                "run 'manual-to-markdown inspect' first"
             )
         try:
             pagemap_payload = json.loads(pagemap_path.read_text(encoding="utf-8"))
@@ -310,7 +310,7 @@ def run_parsing(
     }:
         raise ConfigError(f"configured manuals do not include {document_id}")
 
-    log(f"lsdyna-manual-builder {__version__}")
+    log(f"LS-DYNA Manual to Markdown {__version__}")
     log(f"parse release {release}: load PageMap / SectionMap")
     navigation_root = (
         Path(intermediate_dir)
@@ -1185,7 +1185,7 @@ def run_build(
     config = load_config(config_path)
     release, documents = _resolve_documents(config)
     document_records = [document.metadata() for document in documents]
-    log(f"lsdyna-manual-builder {__version__}")
+    log(f"LS-DYNA Manual to Markdown {__version__}")
     log(f"build release {release}: {len(documents)} document(s)")
 
     log("[1/3] inspect: generate PageMap / SectionMap")

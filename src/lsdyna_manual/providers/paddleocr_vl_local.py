@@ -83,6 +83,21 @@ class PaddleOCRVLLocalProvider(DocumentProvider):
             return False
         return response.status_code == 200
 
+    def _worker_environment(self) -> dict[str, str]:
+        environment = dict(os.environ)
+        runtime_home = (self.local_config.runtime_dir / "home").resolve()
+        runtime_home.mkdir(parents=True, exist_ok=True)
+        # Paddle derives its dataset cache from expanduser("~") on Windows and
+        # exposes no dedicated override. Keep all isolated-worker caches inside
+        # the configured runtime instead of depending on the user profile.
+        environment["HOME"] = str(runtime_home)
+        environment["USERPROFILE"] = str(runtime_home)
+        environment["PADDLE_PDX_CACHE_HOME"] = str(self.paths.paddlex_cache.resolve())
+        if self.local_config.model_source:
+            environment["PADDLE_PDX_MODEL_SOURCE"] = self.local_config.model_source
+            environment["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+        return environment
+
     def _start_worker(self) -> None:
         if self._worker_is_healthy():
             return
@@ -102,11 +117,7 @@ class PaddleOCRVLLocalProvider(DocumentProvider):
             "--llama-server-url",
             self.local_config.llama_server_url,
         ]
-        environment = dict(os.environ)
-        environment["PADDLE_PDX_CACHE_HOME"] = str(self.paths.paddlex_cache)
-        if self.local_config.model_source:
-            environment["PADDLE_PDX_MODEL_SOURCE"] = self.local_config.model_source
-            environment["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+        environment = self._worker_environment()
         try:
             self._worker_process = subprocess.Popen(
                 command,

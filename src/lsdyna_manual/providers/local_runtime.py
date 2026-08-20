@@ -9,6 +9,7 @@ already prepared runtime.
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import stat
 import subprocess
@@ -40,6 +41,10 @@ class LocalRuntimePaths:
     layout_model: Path
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _default_model_paths(config: LocalProviderConfig) -> tuple[Path, Path]:
     model_dir = config.runtime_dir / "models" / "paddleocr-vl-1.6-gguf"
     return (
@@ -60,7 +65,8 @@ class LocalRuntimeManager:
     def _llama_server_path(self) -> Path | None:
         if self.config.llama_server_path is not None:
             return Path(self.config.llama_server_path)
-        bundled = self.config.runtime_dir / "bin" / "llama-server"
+        executable_name = "llama-server.exe" if _is_windows() else "llama-server"
+        bundled = self.config.runtime_dir / "bin" / executable_name
         if bundled.is_file():
             return bundled
         found = shutil.which("llama-server")
@@ -68,17 +74,26 @@ class LocalRuntimeManager:
 
     def paths(self) -> LocalRuntimePaths:
         model_default, mmproj_default = _default_model_paths(self.config)
+        executable_name = "llama-server.exe" if _is_windows() else "llama-server"
+        python_relative = (
+            Path("venv") / "Scripts" / "python.exe"
+            if _is_windows()
+            else Path("venv") / "bin" / "python"
+        )
         paddlex_cache = Path(
             self.config.paddlex_cache_dir
             or self.config.runtime_dir / "paddlex"
         )
         return LocalRuntimePaths(
-            llama_server=self._llama_server_path() or self.config.runtime_dir / "bin" / "llama-server",
+            llama_server=(
+                self._llama_server_path()
+                or self.config.runtime_dir / "bin" / executable_name
+            ),
             model=Path(self.config.model_path or model_default),
             mmproj=Path(self.config.mmproj_path or mmproj_default),
             paddleocr_python=Path(
                 self.config.paddleocr_python
-                or self.config.runtime_dir / "venv" / "bin" / "python"
+                or self.config.runtime_dir / python_relative
             ),
             paddlex_cache=paddlex_cache,
             layout_model=paddlex_cache / "official_models" / "PP-DocLayoutV3",
@@ -91,8 +106,15 @@ class LocalRuntimeManager:
             for filename in ("inference.yml", "inference.json", "inference.pdiparams")
         )
 
-    @staticmethod
-    def _modules_available(python: Path) -> bool:
+    def _python_environment(self) -> dict[str, str]:
+        environment = dict(os.environ)
+        runtime_home = (self.config.runtime_dir / "home").resolve()
+        runtime_home.mkdir(parents=True, exist_ok=True)
+        environment["HOME"] = str(runtime_home)
+        environment["USERPROFILE"] = str(runtime_home)
+        return environment
+
+    def _modules_available(self, python: Path) -> bool:
         if not python.is_file():
             return False
         try:
@@ -100,6 +122,7 @@ class LocalRuntimeManager:
                 [str(python), "-c", "import paddle, paddleocr"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=self._python_environment(),
                 check=False,
             )
         except OSError:
@@ -357,7 +380,7 @@ class LocalRuntimeManager:
 
     @staticmethod
     def _path_argument(executable: Path, path: Path) -> str:
-        if executable.suffix.casefold() != ".exe":
+        if _is_windows() or executable.suffix.casefold() != ".exe":
             return str(path)
         try:
             result = subprocess.run(

@@ -49,10 +49,17 @@ workspace/*
 !workspace/README.md
 output/
 reports/
-\n# Local credentials and machine-specific configurations
+
+# Local credentials and machine-specific configurations
 configs/local*.yaml
 configs/*.local.yaml
 configs/*.secret.yaml
+
+# Local model weights and inference artifacts
+*.gguf
+*.safetensors
+*.pdiparams
+*.onnx
 
 # IDE / Editor files
 .vscode/

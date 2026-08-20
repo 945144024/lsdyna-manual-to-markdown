@@ -1,6 +1,10 @@
 # Markdown 格式规范
 
-本文档定义 `lsdyna-manual-builder` 生成的 Keyword 与 Theory Markdown 文档的组织结构与格式规则，是 `markdown` 模块 renderer 的实现依据。
+本文档定义 LS-DYNA Manual to Markdown 生成的 Keyword 与 Theory Markdown 文档组织结构与格式规则，是 `markdown` 模块 renderer 的实现依据。
+
+本规范已用于 R17 完整构建：2,333 个 manifest 条目均生成非空 Markdown。
+`success` 与 `warning` 使用相同正文格式；不确定性通过 manifest 状态和
+`reports/issues.jsonl` 表达，不通过静默改写正文消除。
 
 > 本文档描述当前 Corpus Markdown 格式。Keyword renderer 识别 Description、Purpose、Option、Card、变量说明区域、Remarks 与 References；等价 summary 和完全重复说明只在渲染层去重，来源仍参与 block accounting。Theory renderer 按数字层级与 title-anchor 所有权输出章节文件。PageIR 表格 span 在语义层投影为不复制源文本的矩形表格，无法确认的 Keyword 结构保留 Source Material fallback。Provider raw Markdown 不是最终产品格式。
 
@@ -213,4 +217,4 @@ source_pages:
 正文以章节标题作为一级标题，随后按 PageIR 的确定性 reading order 保留正文、
 表格、公式和图片占位。Theory 不生成摘要、Card、变量目录、解释性文本或模型推断；
 无法可靠排序或归类的内容进入 `## Source Material` 并记录 warning。共享边界页、
-父子章节和 block accounting 的完整规则见 `docs/theory-corpus-contract.md`。
+父子章节和 block accounting 的完整规则见 `theory-corpus-contract.md`。

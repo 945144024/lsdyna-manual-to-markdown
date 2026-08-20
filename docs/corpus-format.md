@@ -1,6 +1,10 @@
 # Corpus 格式规范
 
-本文档定义 `lsdyna-manual-builder` 生成的 Manual Corpus 的目录结构与数据格式，是 `manifest` 模块与输出校验的实现依据。
+本文档定义 LS-DYNA Manual to Markdown 生成的 Manual Corpus 目录结构与数据格式，是 `manifest` 模块与输出校验的实现依据。
+
+Corpus schema v0.1 已完整实现。R17 四册验收生成 2,333 个非空 Markdown，
+manifest 路径一一对应，8,186 个计划页面全部具有 PageIR。冻结验收基线位于
+`r17-corpus-acceptance-v0.1.json`。
 
 ## 1. 目标与范围
 
@@ -12,7 +16,8 @@ v0.1 是格式转换与结构重建工具，不是翻译器、总结器或技术
 
 v0.1 不涉及 RAG、MCP、`.k` 文件解析、Keyword Validator、LSP、Embedding、知识图谱与多版本比较。
 
-实际回归状态和已知 Markdown 边界见 `docs/project-status.md`。Corpus 规范描述产物形状，不代表每份输入 PDF 都能无 warning 生成完整语义条目。
+实际回归状态和已知 Markdown 边界见 `project-status.md`。Corpus 规范描述产物
+形状，不代表每份输入 PDF 都能无 warning 生成完整语义条目。
 
 ## 2. 源文档结构背景
 
@@ -55,7 +60,7 @@ corpus_root/
 Markdown 文档按 `volume → family → keyword` 三级目录组织。Volume 层应保留，以维持源文档的卷级来源边界；Family 层应保留，用于控制单目录规模并便于人工浏览。全部 Markdown 平铺的方案不采用。
 
 Theory 文档使用独立的 `markdown/theory/<section_id>.md` 路径。Theory 的数字层级、
-父子关系和 block 保留规则见 `docs/theory-corpus-contract.md`，不套用 Keyword 的
+父子关系和 block 保留规则见 `theory-corpus-contract.md`，不套用 Keyword 的
 family、Card 或变量目录结构。
 
 Family 目录不生成 `index.md`。机器索引由 `manifest.jsonl` 承担，人工浏览由目录结构承担。
@@ -86,7 +91,7 @@ Theory 条目按 SectionMap 的 `kind == "theory"` 单位生成文件；相邻�
 | `status` | string | `success` / `warning` / `failed` 之一 |
 
 Theory 记录使用 `section_id`、`section_number`、`title` 和 `parent_section_id` 替代
-Keyword 专用字段，具体 JSON 形状见 `docs/theory-corpus-contract.md`。两种记录共用
+Keyword 专用字段，具体 JSON 形状见 `theory-corpus-contract.md`。两种记录共用
 同一个 manifest，不建立第二套索引。
 
 `source_pages` 每项的定义：
@@ -113,7 +118,7 @@ manual:
       volume: 1
       name: "Keyword Manual Volume I"
       source_file: "LS-DYNA_Manual_Vol_I_R17.pdf"
-      pdf_page_count: 3846
+      pdf_page_count: 4301
       sha256: "…"
       support_level: "verified"
     - document_id: "theory"
@@ -121,7 +126,7 @@ manual:
       volume: null
       name: "Theory Manual"
       source_file: "LS-DYNA_Manual_Theory_R17.pdf"
-      pdf_page_count: 882
+      pdf_page_count: 908
       sha256: "…"
       support_level: "verified"
 builder:
@@ -129,7 +134,7 @@ builder:
   # 记录实际构建使用的 Provider；取值取决于配置。
   parser_provider: "<provider used for the build>"
   parser_model: "<provider model name>"
-  timestamp: "2026-08-16T00:00:00Z"
+  timestamp: "2026-08-20T00:00:00Z"
 stats:
   entry_count: 1234
   family_count: 56

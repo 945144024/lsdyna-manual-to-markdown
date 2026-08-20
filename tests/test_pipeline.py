@@ -110,8 +110,8 @@ def _write_config(
     config = tmp_path / "config.yaml"
     config.write_text(
         CONFIG_TEMPLATE.format(
-            manuals_dir=manuals_dir,
-            corpus_dir=corpus_dir,
+            manuals_dir=manuals_dir.as_posix(),
+            corpus_dir=corpus_dir.as_posix(),
             release=release,
         ),
         encoding="utf-8",
@@ -299,7 +299,7 @@ def test_build_real_parse_and_reconstruct_from_one_entry(monkeypatch, tmp_path):
     )
     config.write_text(
         config.read_text(encoding="utf-8")
-        + f'quality_gate:\n  baseline: "{baseline}"\n',
+        + f"quality_gate:\n  baseline: '{baseline.as_posix()}'\n",
         encoding="utf-8",
     )
 

@@ -2557,13 +2557,13 @@ def test_run_reconstruction_writes_theory_to_unified_manifest(tmp_path):
         f"""manual:
   release: R17
   documents:
-    - path: "{manual}"
+    - path: "{manual.as_posix()}"
 parser:
   provider: paddleocr-vl-remote
   model: PaddleOCR-VL-1.6
   api_key: null
 output:
-  corpus_dir: "{corpus}"
+  corpus_dir: "{corpus.as_posix()}"
 """,
         encoding="utf-8",
     )
@@ -2646,13 +2646,13 @@ def test_run_reconstruction_writes_corpus_outputs(tmp_path):
         f"""manual:
   release: R17
   documents:
-    - path: \"{manual}\"
+    - path: \"{manual.as_posix()}\"
 parser:
   provider: paddleocr-vl-remote
   model: PaddleOCR-VL-1.6
   api_key: null
 output:
-  corpus_dir: \"{corpus}\"
+  corpus_dir: \"{corpus.as_posix()}\"
 """,
         encoding="utf-8",
     )

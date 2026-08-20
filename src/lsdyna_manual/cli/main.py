@@ -1,4 +1,4 @@
-"""Command-line entry point for lsdyna-manual-builder."""
+"""Command-line entry point for LS-DYNA Manual to Markdown."""
 
 from __future__ import annotations
 
@@ -16,12 +16,16 @@ from lsdyna_manual.pipeline import (
     run_reconstruction,
 )
 from lsdyna_manual.providers.base import ProviderError
-from lsdyna_manual.regression_sampling import run_sampling
+from lsdyna_manual.regression_sampling import (
+    run_manifest_detection,
+    run_sampling,
+    sample_page_reference_count,
+)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="lsdyna-manual",
+        prog="manual-to-markdown",
         description=(
             "Build a Markdown corpus from user-supplied LS-DYNA Manuals."
         ),
@@ -106,6 +110,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     sample_cmd.add_argument("--seed", type=int, default=20260817)
     sample_cmd.add_argument(
+        "--sample-manifest",
+        help="detect this frozen manifest instead of selecting a new sample",
+    )
+    sample_cmd.add_argument(
         "--anchor",
         action="append",
         default=[],
@@ -150,18 +158,35 @@ def main(argv: list[str] | None = None) -> int:
                         f"invalid --anchor {value!r}; expected DOCUMENT_ID:SECTION_ID"
                     )
                 anchors.append(tuple(value.split(":", 1)))
-            manifest, report = run_sampling(
-                manuals_dir=args.manuals_dir,
-                release=args.release,
-                intermediate_dir=args.intermediate_dir,
-                pageir_root=args.pageir_dir,
-                output_dir=args.output_dir,
-                seed=args.seed,
-                anchor_sections=anchors,
-            )
+            try:
+                if args.sample_manifest is not None:
+                    if anchors:
+                        raise ConfigError(
+                            "--anchor cannot be combined with --sample-manifest"
+                        )
+                    manifest, report = run_manifest_detection(
+                        manifest_path=args.sample_manifest,
+                        manuals_dir=args.manuals_dir,
+                        release=args.release,
+                        intermediate_dir=args.intermediate_dir,
+                        pageir_root=args.pageir_dir,
+                        output_dir=args.output_dir,
+                    )
+                else:
+                    manifest, report = run_sampling(
+                        manuals_dir=args.manuals_dir,
+                        release=args.release,
+                        intermediate_dir=args.intermediate_dir,
+                        pageir_root=args.pageir_dir,
+                        output_dir=args.output_dir,
+                        seed=args.seed,
+                        anchor_sections=anchors,
+                    )
+            except ValueError as exc:
+                raise ConfigError(str(exc)) from exc
             print(
                 f"samples={manifest['summary']['sample_count']} "
-                f"pages={manifest['summary']['sample_pages']} "
+                f"pages={sample_page_reference_count(manifest)} "
                 f"checked={report['summary']['checked_count']} "
                 f"partial={report['summary']['partial_count']} "
                 f"not_parsed={report['summary']['not_parsed_count']}"

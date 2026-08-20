@@ -28,6 +28,7 @@ from lsdyna_manual.regression_sampling import (
     keyword_quality_findings,
     length_bucket,
     load_sample_page_keys,
+    run_manifest_detection,
 )
 
 
@@ -380,3 +381,60 @@ def test_detection_reports_keyword_issue_details(tmp_path):
         "pdf_page": 1,
         "manual_page": "1-1",
     } in record["issue_details"]
+    assert "\\" not in record["markdown_path"]
+
+
+def test_manifest_detection_preserves_frozen_selection(monkeypatch, tmp_path):
+    manifest = {
+        "schema_version": "0.1",
+        "kind": "semantic-regression-sample",
+        "release": "R17",
+        "summary": {"sample_count": 1},
+        "documents": [],
+        "samples": [
+            {
+                "sample_id": "PINNED-001",
+                "document_id": "theory",
+                "section_id": "23.37",
+                "pdf_pages": [425, 426, 427],
+            }
+        ],
+    }
+    manifest_path = tmp_path / "frozen.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    captured = {}
+    monkeypatch.setattr(
+        "lsdyna_manual.regression_sampling._discover_documents",
+        lambda _manuals_dir, _release: {},
+    )
+    monkeypatch.setattr(
+        "lsdyna_manual.regression_sampling.load_navigation",
+        lambda _intermediate_dir: {},
+    )
+
+    def fake_detect(**kwargs):
+        captured["manifest"] = kwargs["manifest"]
+        return {"summary": {"checked_count": 1}}
+
+    monkeypatch.setattr(
+        "lsdyna_manual.regression_sampling.detect_sample_manifest",
+        fake_detect,
+    )
+    monkeypatch.setattr(
+        "lsdyna_manual.regression_sampling.write_sampling_outputs",
+        lambda frozen, _report, _output: captured.setdefault("written", frozen),
+    )
+
+    frozen, report = run_manifest_detection(
+        manifest_path=manifest_path,
+        manuals_dir=tmp_path / "manuals",
+        release="R17",
+        intermediate_dir=tmp_path / "intermediate",
+        pageir_root=tmp_path / "pageir",
+        output_dir=tmp_path / "output",
+    )
+
+    assert frozen == manifest
+    assert captured["manifest"] == manifest
+    assert captured["written"] == manifest
+    assert report["summary"]["checked_count"] == 1

@@ -1,162 +1,175 @@
 # 项目开发状态
 
-本文记录 `0.1.0-dev` 的开发状态、验证证据和未完成事项。面向用户的运行说明见 `README.md`；本文更偏向开发交接和回归记录。
+本文记录 `0.1.0-dev` 的当前实现、验证证据、质量边界和后续工作。用户安装与运行
+方式见根目录 `README.md`。
 
-## 里程碑
+## 1. 当前定位
 
-### 已完成
+项目已经形成可运行的一键 Corpus 构建流水线：
 
-- Keyword Volume I-III 与 Theory Manual 的确定性发现、ingest 和文档身份解析。
-- PageMap / SectionMap v0.1、JSON Schema、TOC 索引、legacy alias 和 inspection 质量门禁。
-- R12-R17 回归基线：22 份 PDF、88 个模型辅助视觉复核页面。
-- 页面级 ParsePlan：SectionMap 章节起点作为软边界，`max_batch_pages` 作为 transport 硬上限。
-- 远程 PaddleOCR-VL Provider：进度输出、raw artifact、业务码/配额处理、checkpoint 校验和恢复；远程默认 batch size 为 1。
-- 本地 PaddleOCR-VL Provider：PaddleOCR worker、官方 GGUF/mmproj、PaddleX layout model 和 llama-server 生命周期；本地单页、单并发，并要求显式授权运行时安装。
-- Canonical PageIR Adapter 和 state schema v0.2；raw artifact 按源 hash、provider/model、adapter 和 PageIR schema 身份校验。
-- SectionIR：按 SectionMap 候选范围重建，保留共享边界和 block accounting。
-- KeywordIR：Description、Purpose、Options、Card 区域、summary/definition 表、合并行与点号子卡、固定字段槽位、条件、Variable Description 行/值表/文本前缀、变量族映射、Remarks、References 和 fallback block。
-- 首版 Markdown renderer、Corpus manifest 和质量报告。
-- PDF 文本层与 PageIR 的确定性抽样比对。
-- 按文档和章节长度分层的可复现语义抽样，支持固定 seed 和低频结构显式 anchor。
-- Theory Corpus v0.1 输出合同：章节级身份、统一 manifest、父子关系、保守 block 流、共享边界和状态语义已冻结。
-- TheoryIR、Theory Markdown renderer、数字章节稳定路径、父子/兄弟 title-anchor block 所有权和 Keyword/Theory 统一 manifest 已实现。
-- `build` 已改为一键执行 `inspect -> parse -> reconstruct`，支持 raw/PageIR checkpoint 复用、配额暂停和同命令恢复。
-- 当前自动化测试共 250 个，全部通过。
+```text
+Manual PDF
+  -> discovery / ingest
+  -> PageMap + SectionMap
+  -> page-centric ParsePlan
+  -> PaddleOCR-VL raw artifact
+  -> Canonical PageIR v0.2
+  -> SectionIR
+  -> KeywordIR / TheoryIR
+  -> Markdown + manifest + reports
+```
 
-### 当前回归状态
+当前最终产物是可供后续索引的 Markdown Corpus，不包含向量化、RAG、MCP、知识图谱、
+`.k` 文件解析或 Keyword 校验器。
 
-完整 R17 一键构建验收已于 2026-08-20 完成，输入包括 Keyword Volume I-III 和 Theory Manual。验收从 `build` 入口执行 `inspect -> parse -> reconstruct`，复用合法 checkpoint；最后一个异常页面完成受审计恢复后，离线 reconstruction 刷新最终 Corpus 和报告。
+## 2. 已实现能力
+
+- Keyword Volume I-III 与 Theory Manual 的发现、身份解析和 ingest；
+- PageMap / SectionMap v0.1、JSON Schema、TOC/页脚证据和 inspection 质量门；
+- 页面级 ParsePlan、单页身份、transport batch 和断点续跑；
+- PaddleOCR-VL remote Provider，以及本地 PaddleOCR worker + `llama-server`
+  Provider；
+- raw artifact、checkpoint 和 PageIR 的源文件/provider/model/adapter/schema 身份
+  校验；
+- Canonical PageIR v0.2，包含 typed block、bbox、issue 和表格
+  `rowspan`/`colspan`；
+- SectionIR block accounting、共享边界保留和页眉页脚 provenance；
+- KeywordIR 的 Description、Purpose、Options、Card、条件、Variable Description、
+  变量族、Remarks、References 和 Source Material fallback；
+- TheoryIR 的数字章节身份、父子关系、title-anchor block 所有权和统一 manifest；
+- Markdown renderer、`corpus.yaml`、`manifest.jsonl` 和统一质量报告；
+- PDF 文本层抽样验证与公式表示差异分流；
+- 冻结样本 manifest、分层语义回归和完整 Corpus quality gate；
+- `build` 一键执行 `inspect -> parse -> reconstruct`，支持配额暂停和同命令恢复。
+
+## 3. 版本支持范围
+
+确定性 Inspection 回归基线覆盖 22 份文档：
+
+- R12-R17 Keyword Manual，共 18 份；
+- R14-R17 Theory Manual，共 4 份；
+- 每个 release 支持任意非空 Keyword/Theory 文档组合。
+
+R12-R16 的承诺止于 Inspection。完整 PageIR、Keyword/Theory 重建和 Corpus 验收目前
+以 R17 为准。其他 release 可以 best-effort 运行，但不属于已验证范围。
+
+## 4. R17 完整构建验收
+
+2026-08-20 完成 Keyword Volume I-III 与 Theory 四册的一键构建验收。
 
 | 指标 | 结果 |
 | --- | ---: |
 | ParsePlan 唯一页面 | 8,186 |
 | PageIR 完成 / 失败 / 缺失 | 8,186 / 0 / 0 |
 | Corpus 条目 | 2,333 |
-| 条目 `success` / `warning` / `failed` | 2,027 / 306 / 0 |
-| 最终 issue | 4,939 |
-| issue `info` / `warning` / `error` | 4,188 / 750 / 1 |
+| 条目 success / warning / failed | 2,027 / 306 / 0 |
+| 非空 Markdown | 2,333 |
+| issue 总数 | 4,939 |
+| issue info / warning / error | 4,188 / 750 / 1 |
 
-最后完成的页面为 Keyword Volume I PDF 第 3002 页（印刷页 `27-28`）。该页非空，当前 llama.cpp b10456 在一个 algorithm block 中生成单字节 `0x95`，OpenAI-compatible chat 的 PEG-native parser 因而拒绝结果。隔离 worker 只在精确匹配该 500 响应时，以 `/apply-template` 固化同一 prompt，并从 `n_probs=1` 的 SSE token bytes 接受可审计恢复。实际运行在 raw `job.json` 中记录了 `apply-template+sse-token-bytes` transport，页面 checkpoint 为 `done`。
+Manifest 与 Markdown 路径一一对应，没有空文件、重复路径或未列出的 Markdown。
+Theory 父子关系完整且无环。最终整体状态为 `warning`，因为仍有需保留 review
+metadata 的结构边界；这不等同于页面解析失败。
 
-恢复没有猜写 `*KEYWORD`。native Content-only parser 可在拒绝字符处提前终止，Paddle 后处理把该 algorithm block 投影为单独的 `*`；因此程序保留结构化 PageIR，但产生 `MODEL_OUTPUT_BYTE_RECOVERY` warning，并将 `INCLUDE_COMPENSATION_SPRINGBACK_INPUT`、`INCLUDE_COMPENSATION_SYMMETRIC_LINES` 两个相关条目标为 warning。后续恢复会把精确解码输出和 replacement-character 计数同时保存到本地 raw transport metadata；任何缺失代码仍必须人工对照来源，不得由 PDF 文本层或上下文补写。
+精确统计、manifest/Markdown 摘要和关键证据断言冻结在
+`docs/r17-corpus-acceptance-v0.1.json`。配置
+`quality_gate.baseline` 后，构建生成 `reports/acceptance.json`；任何覆盖率、
+计数、路径、内容摘要或关键 evidence 漂移都会使质量门失败。
 
-另一个 error 为 Keyword Volume I PDF 第 3216 页（印刷页 `29-12`）的 `TABLE_STRUCTURE_UNCERTAIN`，归属 `INTEGRATION_BEAM`。源页中的非矩形网格位于 Figure 内，缺少将其解释为 Card 数据的可靠证据，当前保留原始来源和 error，不强制投影为矩形语义表。
+高影响残留及不继续自动收敛的理由见 `docs/r17-corpus-quality-review.md`。
 
-完整构建的 2,333 条 manifest 记录与 2,333 个 Markdown 路径一一对应，没有空文件、重复路径或 `failed` 条目；Theory 父子关系完整且无环。最终报告同时包含 3 个 Inspection `ANCHOR_CONFLICT`、2 个按条目归属展开的 `MODEL_OUTPUT_BYTE_RECOVERY`、Reconstruction/PageIR issue 和文本层验证结果。整体构建状态为 `warning`，准确反映全部页面已有 PageIR 但仍存在需复核结构，而不是由 `status_failed: 0` 推断为全部成功。
+## 5. 语义回归
 
-当前 R17 语义回归使用固定 seed `20260817`，manifest 为：
+固定分层样本使用 seed `20260817`：
 
-```text
-workspace/regression/r17/semantic-sample/sample_manifest.json
-```
+- 43 个章节；
+- 258 个章节页引用；
+- 224 个唯一页面；
+- PageIR 完成 224/224。
 
-其中包含 43 个抽样章节、258 个章节页引用和 224 个去重后的唯一页面。本地 OCR 会话于 2026-08-18 完成；随后可从已缓存 raw artifact 离线重建 PageIR，不再启动 Provider。当前为 224/224 完成、失败为 0。
+独立 holdout 使用 seed `20260818`：
 
-独立 holdout 已完成本地 Paddle 解析和 v0.2 PageIR 重建：
+- 40 个章节；
+- 214 个章节页引用；
+- 211 个唯一页面；
+- PageIR 完成 211/211；
+- 其中 195 页不在固定样本中。
 
-```text
-workspace/regression/r17/semantic-sample-holdout-20260818/sample_manifest.json
-```
-
-holdout 使用新 seed `20260818`、不追加旧 anchor，共 40 个章节、214 个章节页引用和 211 个去重页面；其中 195 个页面不在旧样本集合内，旧样本重叠率为 7.58%。211/211 页已生成 PageIR v0.2，40/40 个章节完整覆盖，`partial == 0`、`not_parsed == 0`。
-
-holdout 最终检测结果：29/29 个 Keyword 样本通过 block accounting，23 个 `checked`、6 个 `warning`；共 103 个 Card、824 个 Card field、324 个 Variable Description、29 个变量族映射和 3 个续表。10/10 个 Theory 样本均为 `checked`，并生成 `THEORY_BOUNDARY_RESOLVED`；不再有 Theory 共享边界 warning。质量探针剩余 3 个 Source Material fallback、2 个未匹配变量标题和 2 个非等价 summary/definition 候选。文本层 16 个低 raw recall 页面均属于公式表示差异；非公式正文 recall 最低为 0.9297，没有普通 `TEXT_LAYER_DIVERGENCE`。
-
-| 文档 | 唯一样本页 | PageIR `done` | 仅 raw | 未开始 |
-| --- | ---: | ---: | ---: | ---: |
-| Volume I | 79 | 79 | 0 | 0 |
-| Volume II | 62 | 62 | 0 | 0 |
-| Volume III | 47 | 47 | 0 | 0 |
-| Theory | 36 | 36 | 0 | 0 |
-| **合计** | **224** | **224** | **0** | **0** |
-
-共享的 `workspace/run_r17/parsing/state.json` 另有 Volume II 第 32、33 页的两个较早远程超时记录。它们不属于上表的当前分层样本统计，恢复时应作为历史重试候选处理，不要与本轮样本完成率混淆。
-
-当前 224 个样本页都已经生成并通过本地 checkpoint 身份校验。共享 state 中的两个历史远程超时记录不影响本轮样本 224/224 的完成率。
-
-第一次主线回归已于 2026-08-18 完成：
-
-- `sample-regression` 检查了全部 43 个章节和 258 个章节页引用，`partial == 0`、`not_parsed == 0`；
-- 32 个 Keyword 样本中 8 个为 `checked`、24 个为 `warning`，另有 1 个 document 样本和 10 个 Theory 样本完成 PageIR 检查；
-- 32/32 个 Keyword 样本均通过 block accounting；共重建 109 个 Card、791 个 Card field、15 个 Card condition、225 个 Variable Description、6 个变量族映射和 2 个续表；
-- 质量探针检测到 27 个 Source Material fallback 候选、17 个字面量 `\\n` 候选、10 个 Card summary/definition 双重渲染候选和 5 个重复 Variable Description 候选；
-- 116 个文本层抽样比较中有 10 个低于 `0.65` recall 门限，其中 Volume II 为 2 个、Theory 为 8 个；
-- 全量 `reconstruct` 扫描了 1751 个 Keyword 条目并生成 79 个 Markdown，其中 11 个 `success`、68 个 `warning`、1672 个 `failed`。失败主要来自当前仅有样本 PageIR：报告包含 8139 个 `SECTION_PAGEIR_MISSING`，不能解释为已解析样本失败。
-
-本轮检测报告位于 `workspace/regression/r17/semantic-sample/sample_detection.json`。后续重复回归必须保持相同 seed 和 anchor，且不得重新提交已经完成的样本 OCR。
-
-在第一次主线回归基础上，PageIR span、空白页分流、Theory 所有权和五类 Keyword
-通用规则均已收敛。最终两组结果如下：
-
-| 指标 | 固定样本 | 独立 holdout |
-| --- | ---: | ---: |
-| 全部章节覆盖 | 43/43 | 40/40 |
-| Keyword `checked` / `warning` | 24 / 8 | 23 / 6 |
-| Theory `checked` | 10/10 | 10/10 |
-| Card / Card field | 115 / 864 | 103 / 824 |
-| Variable Description | 373 | 324 |
-| 变量族映射 / 续表 | 31 / 6 | 29 / 3 |
-| Source Material fallback | 3 | 3 |
-| 未匹配变量标题 | 3 | 2 |
-
-两组 Keyword 均全部通过 block accounting，`partial == 0`、`not_parsed == 0`。
-20/20 个 Theory 样本均生成 `THEORY_BOUNDARY_RESOLVED`，不再有 Theory 共享边界
-warning。固定样本 10 个、holdout 16 个低 raw recall 页面全部归为
-`TEXT_LAYER_FORMULA_REPRESENTATION_DIVERGENCE`；没有普通正文
+两组 Keyword 样本均通过 block accounting；20/20 个 Theory 样本完成确定性边界
+归属。低 raw recall 页面均被归为公式表示差异，没有普通正文
 `TEXT_LAYER_DIVERGENCE`。
 
-## 真实 Markdown 已知问题
+已经人工审阅或包含 pinned section 的集合以冻结 manifest 为唯一选择合同。复查时
+必须使用 `sample-regression --sample-manifest`，不能依赖 seed 重新生成选择。
 
-规则收敛后仍需保守处理：
+## 6. Windows 与 Linux/WSL
 
-- 既有收敛报告中的 90 个 `TABLE_STRUCTURE_UNCERTAIN` 来自 v0.1 PageIR 的 rowspan/colspan 或不等宽投影；PageIR v0.2 已实现逻辑单元 span、迁移读取、结构校验和确定性矩形投影。新 holdout 的 211 页包含 136 个 span 单元，未产生 `TABLE_STRUCTURE_UNCERTAIN` 或 span 校验错误；旧报告仍保留为 v0.1 基线，不回写历史计数；
-- 两组样本合并去重后有 13 个 `KEYWORD_BOUNDARY_AMBIGUOUS` 事件缺少唯一标题锚点，仍保留共享页内容；
-- 5 个未匹配变量标题为 `Instability`、`ICO2`、`RHO`、`YMAX` 和 `KBUFSR`，均不存在唯一 Card 目录映射或与目录存在冲突；
-- 唯一 O/0 映射会保留原始表格文本，并记录 info 级 `VARIABLE_IDENTIFIER_CONFUSABLE_MATCH`，不得静默改写；
-- 7 个条目的 17 个 Card 仍有非等价 summary/definition，summary 含独有字段或与 definition 存在标识符冲突，因此两者都保留；
-- 6 个条目仍有 Source Material fallback，原始块没有唯一变量或语义区域归属。
+完整 8,186 页 R17 构建在 Linux/WSL 环境完成。原生 Windows 验收包括：
 
-这些边界已经人工裁决为当前最终处理：保守保留，不通过猜测静默改写 Manual 原文。
+- PowerShell clean clone、CPython 3.12、pip/uv 安装路径和三个 CLI entry point；
+- Windows Poppler 对四册 R17 的 Inspection，结果与 Linux/WSL 基线一致；
+- 本地 PaddlePaddle GPU 3.2.1、PaddleOCR 3.7.0、RTX 4060 和
+  `llama-server` build 10456；
+- 4 个复杂结构哨兵页面；
+- 固定样本 224 页和独立 holdout 211 页。
 
-两轮样本的边界及最终裁决已经去重写入本地报告：
+两组 Windows 样本去重后为 419 页，占 8,186 页的 5.1185%。它们包含 6,031 个
+block、600 个 TableBlock、285 个 span 单元、586 个公式文本和 48 个 Figure；
+解析 JSON 后逐页与 WSL PageIR 全等。Windows 没有重新推理其余 7,767 页，因此
+不能把抽样验收描述为 Windows 完整 R17 构建。
 
-```text
-workspace/regression/r17/manual-review-report-20260818-v2.md
-```
+跨平台修复包括：
 
-报告包含 13 个 Keyword 共享边界事件、5 个变量标题冲突、7 个条目的 17 个非等价
-Card、6 个 Source Material fallback 和 17 个实际 O/0 关联。Theory 父子/兄弟边界
-和 4 个已确认的源 PDF 空白分隔页已由通用规则解决，不再列为人工边界。
+- Poppler stdout 固定按 UTF-8 解码；
+- Windows 原生路径不调用 `wslpath`；
+- Windows 默认识别 `llama-server.exe` 和 `venv/Scripts/python.exe`；
+- manifest 的 `markdown_path` 固定使用 POSIX `/`；
+- Paddle worker HOME 和缓存隔离到 runtime 目录。
 
-## R17 Corpus release candidate
+## 7. 安装与包元数据
 
-完整结果已固化为 `docs/r17-corpus-acceptance-v0.1.json`。可选
-`quality_gate.baseline` 会在 reconstruction 后核对 release、8,186/8,186 页面覆盖、
-2,333 个条目状态、完整 issue 分布、manifest/Markdown 内容摘要、文件路径一致性以及
-3002 byte recovery、3216 Figure 网格和高影响 Card 残留证据，并生成
-`reports/acceptance.json`。
+源码仓库支持标准 `python -m venv` 与 `python -m pip install -e .`，不依赖
+`uv`。全新标准 venv 中的 pip 安装和三个 console entry point 已验证。
 
-剩余 566 个未匹配变量标题（208 个条目）已经按变量式标识符、说明性概念、混合/OCR
-形态、索引符号族和输入示例五层抽样。没有一层存在可由唯一 Card catalog 目标支持的
-统一新规则，因此本轮不继续以减少 warning 为目标扩展匹配。9 个缺 Variable row、
-2 个无效 slot header、28 个 continuation orphan、页面 3002 和页面 3216 的证据与
-结论见 `docs/r17-corpus-quality-review.md`。
+`pyproject.toml` 使用 setuptools build backend、SPDX `MIT` 许可证表达式、
+`LICENSE` 文件声明和公开仓库 URL。sdist 与 wheel 可以成功构建。当前公开测试版
+仍以 clone 仓库为安装合同，不承诺从 PyPI 直接安装，也不要求 sdist/wheel 携带
+仓库根目录的 `configs/` 和完整 `docs/`。
 
-当前 R17 结果定位为可供后续索引的开发验收 Corpus：`success` 正常消费，`warning`
-正文可消费但必须携带 review/issue metadata，`failed` 不消费。具体合同见
-`docs/corpus-format.md`。
+## 8. 自动化验证
 
-## 后续工作
+当前自动化测试共 257 个，全部通过。覆盖范围包括：
 
-1. 由使用方检查本次一键构建的代表性 Markdown、manifest、issues 和 acceptance 报告。
-2. 将质量门纳入发布/CI 流程，并为明确接受的基线变更执行显式 review，而不是自动
-   更新 hash 或计数。
-3. 在新的 release 或新模型输出上采集独立样本；只有出现新的唯一结构证据时再扩展
-   重建规则。
+- discovery、Inspection、PageMap / SectionMap 与质量门；
+- ParsePlan、checkpoint、raw cache 和 Provider 错误处理；
+- PageIR v0.2、table span、reading order 和 Adapter；
+- KeywordIR/TheoryIR、renderer、manifest 和整体 build；
+- Windows/Linux 路径、Poppler UTF-8 和本地 Provider runtime；
+- 固定样本 manifest 复查与 Markdown 路径稳定性；
+- 凭证清理、signed URL 脱敏和合成输入端到端测试。
 
-## 有意保留的范围限制
+发布前还应在 CI 中使用 Windows 与 Ubuntu、Python 3.10-3.12 执行 pip 安装、测试、
+`compileall` 和包构建。真实 Manual 与模型文件不进入 CI 或公开仓库。
 
-- 本地运行时可以安装配置的 Python/model/layout artifact 并启动 llama-server，但不安装 NVIDIA 驱动、CUDA/WSL，也不替用户选择 llama-server 二进制来源。
-- 本地 batch size 和并发保持 1，直到代表性速度和显存测试支持调整。
-- `build` 已是完整主入口；独立 `inspect`、`parse`、`reconstruct` 命令继续用于诊断和开发。
-- `workspace/` 下的 PDF 派生物、raw OCR、PageIR 和报告只是本地证据，不是可分发的仓库资产。
+## 9. 已知质量边界
+
+- 306 个 R17 warning 条目可读取和索引，但必须保留对应 issue metadata；
+- 566 个未匹配变量标题缺少唯一 Card catalog 目标，不使用编辑距离或 OCR 猜测关联；
+- 28 个 Variable Description continuation orphan 缺少统一版式和唯一归属；
+- PDF 第 3002 页使用可审计 token-byte recovery，不能证明被 native parser 截断的
+  字符；
+- PDF 第 3216 页的非矩形网格属于 Figure，保留唯一
+  `TABLE_STRUCTURE_UNCERTAIN` error，不强制解释为 Card；
+- 本地 Provider 保持单页、单并发，不自动安装 NVIDIA 驱动/CUDA，也不替用户选择
+  第三方 `llama-server` 二进制。
+
+规则扩展必须基于真实页面中的唯一、可重复程序证据。不得为了降低 warning 数量而
+引入手册特例、模糊匹配、上下文补字或文本层覆盖。
+
+## 10. 发布前剩余工作
+
+1. 固化并提交当前 Windows、pip、文档和仓库安全改动；
+2. 增加 Windows/Ubuntu CI 和公开测试版发布说明；
+3. 将版本元数据更新为公开测试版版本并创建 release tag；
+4. 在新 Manual release 或新模型输出出现后采集独立样本，只在出现新结构证据时
+   扩展通用规则。

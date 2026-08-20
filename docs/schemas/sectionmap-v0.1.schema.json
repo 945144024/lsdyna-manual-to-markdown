@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lsdyna-manual-builder.invalid/schema/sectionmap-v0.1.json",
+  "$id": "https://lsdyna-manual-to-markdown.invalid/schema/sectionmap-v0.1.json",
   "title": "LS-DYNA Manual SectionMap v0.1",
   "type": "object",
   "required": [
