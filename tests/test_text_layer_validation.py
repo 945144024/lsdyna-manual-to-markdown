@@ -110,3 +110,28 @@ def test_text_layer_sampling_uses_deterministic_first_middle_last_pages(tmp_path
     )
 
     assert [sample.pdf_page for sample in report.samples] == [1, 4, 6]
+
+
+def test_text_layer_unavailable_page_keeps_page_provenance(tmp_path):
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=2,
+        manual_page="2-2",
+        blocks=[TextBlock(text="page two")],
+    )
+
+    report = compare_text_layer_samples(
+        document_id="keyword-volume-2",
+        pdf_path=tmp_path / "manual.pdf",
+        page_irs={2: page},
+        extractor=FakeExtractor(["page one"]),
+        sample_count=1,
+        min_tokens=1,
+    )
+
+    issue = next(
+        issue
+        for issue in report.issues
+        if issue.code == "TEXT_LAYER_PAGE_UNAVAILABLE"
+    )
+    assert (issue.pdf_page, issue.manual_page) == (2, "2-2")

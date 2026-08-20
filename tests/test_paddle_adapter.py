@@ -153,6 +153,136 @@ def test_adapter_falls_back_to_markdown_when_no_blocks(tmp_path):
     assert any(issue.code == "READING_ORDER_AMBIGUOUS" for issue in page_ir.issues)
 
 
+def test_adapter_accepts_string_markdown_fallback(tmp_path):
+    path = tmp_path / "page.json"
+    path.write_text(
+        json.dumps(
+            {
+                "layout_result": {
+                    "markdown": "provider string fallback",
+                    "prunedResult": {"parsing_res_list": []},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    page_ir = PaddleOCRVLAdapter().adapt_page(
+        path,
+        pdf_page=200,
+        manual_page=None,
+    )
+
+    assert [block.text for block in page_ir.blocks] == ["provider string fallback"]
+    assert any(issue.code == "READING_ORDER_AMBIGUOUS" for issue in page_ir.issues)
+
+
+def test_adapter_reports_replacement_character_without_rewriting_source(tmp_path):
+    path = _write_raw(
+        tmp_path,
+        [
+            {
+                "block_label": "text",
+                "block_content": "*\ufffdWORD",
+                "block_bbox": [1, 2, 3, 4],
+            }
+        ],
+    )
+
+    page_ir = PaddleOCRVLAdapter().adapt_page(
+        path,
+        pdf_page=3002,
+        manual_page="27-28",
+    )
+
+    assert page_ir.blocks[0].text == "*\ufffdWORD"
+    assert [issue.code for issue in page_ir.issues] == [
+        "MODEL_OUTPUT_REPLACEMENT_CHARACTER"
+    ]
+
+
+def test_adapter_counts_replacement_characters_inside_table_cells(tmp_path):
+    path = _write_raw(
+        tmp_path,
+        [
+            {
+                "block_label": "table",
+                "block_content": (
+                    "<table><tr><td>*\ufffdWORD</td><td>\ufffd</td></tr></table>"
+                ),
+            }
+        ],
+    )
+
+    page_ir = PaddleOCRVLAdapter().adapt_page(
+        path,
+        pdf_page=3002,
+        manual_page="27-28",
+    )
+
+    assert page_ir.blocks[0].rows[0][0].text == "*\ufffdWORD"
+    assert "2 Unicode replacement character(s)" in page_ir.issues[0].message
+
+
+def test_adapter_reports_byte_recovery_from_page_transport(tmp_path):
+    path = _write_raw(
+        tmp_path,
+        [{"block_label": "algorithm", "block_content": "*"}],
+    )
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["transport"] = {
+        "llama_cpp_sse_byte_recovery": {
+            "count": 1,
+            "outputs": [
+                {
+                    "decoded_output": "*\ufffd",
+                    "replacement_character_count": 1,
+                }
+            ],
+        }
+    }
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    page_ir = PaddleOCRVLAdapter().adapt_page(
+        path,
+        pdf_page=3002,
+        manual_page="27-28",
+    )
+
+    assert [issue.code for issue in page_ir.issues] == [
+        "MODEL_OUTPUT_BYTE_RECOVERY",
+        "MODEL_OUTPUT_REPLACEMENT_CHARACTER",
+    ]
+    assert page_ir.blocks[0].text == "*"
+
+
+def test_adapter_reads_byte_recovery_from_legacy_job_metadata(tmp_path):
+    batch_dir = tmp_path / "batch"
+    pages_dir = batch_dir / "pages"
+    pages_dir.mkdir(parents=True)
+    path = _write_raw(pages_dir, [{"block_label": "text", "block_content": "*"}])
+    (batch_dir / "job.json").write_text(
+        json.dumps(
+            {
+                "transport": {
+                    "llama_cpp_sse_byte_recovery": {"count": 1}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    page_ir = PaddleOCRVLAdapter().adapt_page(
+        path,
+        pdf_page=3002,
+        manual_page="27-28",
+    )
+
+    assert [issue.code for issue in page_ir.issues] == [
+        "MODEL_OUTPUT_BYTE_RECOVERY"
+    ]
+
+
 def test_adapter_uses_pagemap_manual_page_not_paddle_footer(tmp_path):
     path = _write_raw(
         tmp_path,

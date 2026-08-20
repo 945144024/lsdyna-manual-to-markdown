@@ -1,0 +1,66 @@
+{
+  "schema_version": "0.1",
+  "name": "R17 complete Corpus acceptance baseline",
+  "frozen_on": "2026-08-20",
+  "expected": {
+    "release": "R17",
+    "parse": {
+      "parse_total": 8186,
+      "parse_completed": 8186,
+      "parse_failed": 0,
+      "parse_missing": 0
+    },
+    "entries": {
+      "count": 2333,
+      "status_success": 2027,
+      "status_warning": 306,
+      "status_failed": 0
+    },
+    "issues_by_severity": {
+      "error": 1,
+      "info": 4188,
+      "warning": 750
+    },
+    "issues_by_code": {
+      "ANCHOR_CONFLICT": 3,
+      "CARD_DEFINITION_SLOT_HEADER_INVALID": 2,
+      "CARD_DEFINITION_VARIABLE_ROW_MISSING": 9,
+      "KEYWORD_BOUNDARY_AMBIGUOUS": 135,
+      "KEYWORD_BOUNDARY_RESOLVED": 3357,
+      "MODEL_OUTPUT_BYTE_RECOVERY": 2,
+      "SECTION_SHARED_BOUNDARY_PAGE": 2,
+      "SOURCE_BLANK_PAGE": 85,
+      "TABLE_STRUCTURE_UNCERTAIN": 1,
+      "TEXT_LAYER_FORMULA_REPRESENTATION_DIVERGENCE": 1,
+      "THEORY_BOUNDARY_RESOLVED": 580,
+      "THEORY_HIERARCHICAL_PAGE_OVERLAP": 7,
+      "THEORY_TITLE_ANCHOR_MISSING": 1,
+      "VARIABLE_DESCRIPTION_CATALOG_UNAVAILABLE": 1,
+      "VARIABLE_DESCRIPTION_CONTINUATION_ORPHAN": 28,
+      "VARIABLE_DESCRIPTION_UNMATCHED_TITLE": 566,
+      "VARIABLE_IDENTIFIER_CONFUSABLE_MATCH": 159
+    },
+    "markdown": {
+      "count": 2333,
+      "nonempty": 2333,
+      "manifest_paths_match": true,
+      "missing_manifest_paths": [],
+      "unlisted_markdown": [],
+      "duplicate_manifest_paths": [],
+      "records_without_markdown": 0,
+      "failed_records_with_markdown": 0,
+      "sha256": "d5aa090f3addaedb2f5c347723f22b80fdbf49b8d753caec77c193895e010dbc"
+    },
+    "manifest_sha256": "de5e134d988b8aa68b08bb7147717e1d1f87475b297e73b2f1ddd480ff067b68"
+  },
+  "required_evidence": [
+    {"document_id": "keyword-volume-1", "pdf_page": 3002, "code": "MODEL_OUTPUT_BYTE_RECOVERY", "minimum": 2},
+    {"document_id": "keyword-volume-1", "pdf_page": 3216, "code": "TABLE_STRUCTURE_UNCERTAIN", "minimum": 1},
+    {"document_id": "keyword-volume-1", "pdf_page": 721, "code": "CARD_DEFINITION_VARIABLE_ROW_MISSING", "minimum": 1},
+    {"document_id": "keyword-volume-1", "pdf_page": 1590, "code": "CARD_DEFINITION_VARIABLE_ROW_MISSING", "minimum": 1},
+    {"document_id": "keyword-volume-1", "pdf_page": 3392, "code": "CARD_DEFINITION_VARIABLE_ROW_MISSING", "minimum": 2},
+    {"document_id": "keyword-volume-2", "pdf_page": 629, "code": "CARD_DEFINITION_VARIABLE_ROW_MISSING", "minimum": 5},
+    {"document_id": "keyword-volume-1", "pdf_page": 2851, "code": "CARD_DEFINITION_SLOT_HEADER_INVALID", "minimum": 1},
+    {"document_id": "keyword-volume-1", "pdf_page": 3336, "code": "CARD_DEFINITION_SLOT_HEADER_INVALID", "minimum": 1}
+  ]
+}

@@ -49,6 +49,43 @@ def _layout_results_from_jsonl(
     return results
 
 
+def _debug_markdown_sidecar(layout_result: dict[str, Any]) -> str:
+    """Project provider output into a readable raw debugging sidecar."""
+    markdown = layout_result.get("markdown")
+    if isinstance(markdown, str):
+        markdown_text = markdown
+    elif isinstance(markdown, dict):
+        markdown_text = markdown.get("text")
+        if not isinstance(markdown_text, str):
+            markdown_text = markdown.get("markdown_texts")
+    else:
+        markdown_text = None
+    if isinstance(markdown_text, str) and markdown_text.strip():
+        return markdown_text
+
+    pruned = layout_result.get("prunedResult")
+    parsing_results = (
+        pruned.get("parsing_res_list")
+        if isinstance(pruned, dict)
+        else None
+    )
+    if not isinstance(parsing_results, list):
+        parsing_results = layout_result.get("parsing_res_list")
+    if not isinstance(parsing_results, list):
+        return ""
+
+    # This is deliberately only a raw debugging projection. Canonical PageIR
+    # continues to consume the structured blocks from the JSON artifact.
+    contents: list[str] = []
+    for block in parsing_results:
+        if not isinstance(block, dict):
+            continue
+        content = block.get("block_content")
+        if isinstance(content, str) and content.strip():
+            contents.append(content)
+    return "\n\n".join(contents)
+
+
 def store_paddle_bundle(
     job_result: ProviderJobResult,
     *,
@@ -102,6 +139,7 @@ def store_paddle_bundle(
         "pdf_pages": list(pdf_pages),
         "job_data": job_data,
         "timing": dict(job_result.metadata.get("timing", {})),
+        "transport": dict(job_result.metadata.get("transport", {})),
     }
     job_metadata_path = batch_dir / "job.json"
     job_metadata_path.write_text(
@@ -125,6 +163,7 @@ def store_paddle_bundle(
             "job_id": job_result.job_id,
             "batch_id": batch_id,
             "source_layout_index": index,
+            "transport": dict(job_result.metadata.get("transport", {})),
             "layout_result": layout_result,
         }
         json_path = pages_dir / f"{page_stem}.json"
@@ -134,7 +173,7 @@ def store_paddle_bundle(
         )
 
         markdown_text = (
-            layout_result.get("markdown", {}).get("text", "")
+            _debug_markdown_sidecar(layout_result)
             if isinstance(layout_result, dict)
             else ""
         )

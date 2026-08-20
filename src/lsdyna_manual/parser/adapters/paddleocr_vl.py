@@ -153,6 +153,52 @@ def _bbox_from_list(value: list[float] | None) -> tuple[float, float, float, flo
     return (float(value[0]), float(value[1]), float(value[2]), float(value[3]))
 
 
+def _markdown_text(layout_result: dict) -> str:
+    markdown = layout_result.get("markdown")
+    if isinstance(markdown, str):
+        return markdown
+    if isinstance(markdown, dict):
+        for key in ("text", "markdown_texts"):
+            value = markdown.get(key)
+            if isinstance(value, str):
+                return value
+    return ""
+
+
+def _transport_metadata(record: dict, raw_page_json_path: Path) -> dict:
+    """Load page transport provenance, including pre-v4 page artifacts."""
+
+    transport = record.get("transport")
+    if isinstance(transport, dict):
+        return transport
+    job_path = raw_page_json_path.parent.parent / "job.json"
+    try:
+        job_record = json.loads(job_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    transport = job_record.get("transport") if isinstance(job_record, dict) else None
+    return transport if isinstance(transport, dict) else {}
+
+
+def _byte_recovery_metadata(transport: dict) -> tuple[int, int]:
+    recovery = transport.get("llama_cpp_sse_byte_recovery")
+    if not isinstance(recovery, dict):
+        return 0, 0
+    count = recovery.get("count")
+    if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+        return 0, 0
+    replacement_count = 0
+    outputs = recovery.get("outputs", [])
+    if isinstance(outputs, list):
+        for output in outputs:
+            if not isinstance(output, dict):
+                continue
+            decoded = output.get("decoded_output")
+            if isinstance(decoded, str):
+                replacement_count += decoded.count("\ufffd")
+    return count, replacement_count
+
+
 def _block_from_parsing_result(item: dict) -> tuple[Block, list[ParseIssue]]:
     label = str(item.get("block_label") or "text")
     content = str(item.get("block_content") or "")
@@ -187,7 +233,7 @@ def _block_from_parsing_result(item: dict) -> tuple[Block, list[ParseIssue]]:
 
 
 class PaddleOCRVLAdapter(PageAdapter):
-    ADAPTER_VERSION = "paddleocr-vl-adapter:3"
+    ADAPTER_VERSION = "paddleocr-vl-adapter:4"
 
     def identity(self) -> str:
         return self.ADAPTER_VERSION
@@ -200,13 +246,14 @@ class PaddleOCRVLAdapter(PageAdapter):
         manual_page: str | None,
     ) -> PageIR:
         record = json.loads(raw_page_json_path.read_text(encoding="utf-8"))
+        transport = _transport_metadata(record, raw_page_json_path)
         layout_result = record.get("layout_result") or {}
         pruned = layout_result.get("prunedResult") or {}
         parsing_results = pruned.get("parsing_res_list") or []
 
         if not parsing_results:
             fallback_text = (
-                layout_result.get("markdown", {}).get("text", "")
+                _markdown_text(layout_result)
                 if isinstance(layout_result, dict)
                 else ""
             )
@@ -244,9 +291,50 @@ class PaddleOCRVLAdapter(PageAdapter):
                         )
                     )
 
+        replacement_count = sum(
+            _replacement_character_count(block) for block in blocks
+        )
+        recovery_count, recovered_replacement_count = _byte_recovery_metadata(transport)
+        if recovery_count:
+            issues.append(
+                ParseIssue(
+                    severity="warning",
+                    code="MODEL_OUTPUT_BYTE_RECOVERY",
+                    message=(
+                        "provider used audited token-byte recovery for "
+                        f"{recovery_count} recognition block(s); native parser "
+                        "rejection can leave Paddle's structured projection "
+                        "incomplete, so no missing source text was inferred"
+                    ),
+                )
+            )
+        reported_replacement_count = max(
+            replacement_count, recovered_replacement_count
+        )
+        if reported_replacement_count:
+            issues.append(
+                ParseIssue(
+                    severity="warning",
+                    code="MODEL_OUTPUT_REPLACEMENT_CHARACTER",
+                    message=(
+                        "provider output contains "
+                        f"{reported_replacement_count} Unicode replacement character(s); "
+                        "source text is preserved without guessing the missing glyph"
+                    ),
+                )
+            )
+
         return PageIR(
             pdf_page=pdf_page,
             manual_page=manual_page,
             blocks=blocks,
             issues=issues,
         )
+
+
+def _replacement_character_count(block: Block) -> int:
+    if isinstance(block, TableBlock):
+        return sum(
+            cell.text.count("\ufffd") for row in block.rows for cell in row
+        )
+    return str(getattr(block, "text", "")).count("\ufffd")

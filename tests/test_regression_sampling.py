@@ -314,6 +314,8 @@ def test_detection_reports_theory_pageir_issues(tmp_path):
             "severity": "warning",
             "code": "READING_ORDER_AMBIGUOUS",
             "message": "test",
+            "pdf_page": 1,
+            "manual_page": "1-1",
         }
     ]
 
@@ -375,4 +377,6 @@ def test_detection_reports_keyword_issue_details(tmp_path):
         "severity": "warning",
         "code": "READING_ORDER_AMBIGUOUS",
         "message": "keyword test",
+        "pdf_page": 1,
+        "manual_page": "1-1",
     } in record["issue_details"]

@@ -30,9 +30,37 @@ class ParseIssue:
     severity: str
     code: str
     message: str
+    pdf_page: int | None = None
+    manual_page: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data: dict[str, Any] = {
+            "severity": self.severity,
+            "code": self.code,
+            "message": self.message,
+        }
+        if self.pdf_page is not None:
+            data["pdf_page"] = self.pdf_page
+        if self.manual_page is not None:
+            data["manual_page"] = self.manual_page
+        return data
+
+    def with_page_source(
+        self, *, pdf_page: int, manual_page: str | None
+    ) -> "ParseIssue":
+        """Return this issue with missing provenance filled from its owning page."""
+
+        resolved_pdf_page = self.pdf_page if self.pdf_page is not None else pdf_page
+        resolved_manual_page = self.manual_page
+        if resolved_manual_page is None and resolved_pdf_page == pdf_page:
+            resolved_manual_page = manual_page
+        return ParseIssue(
+            severity=self.severity,
+            code=self.code,
+            message=self.message,
+            pdf_page=resolved_pdf_page,
+            manual_page=resolved_manual_page,
+        )
 
 
 @dataclass
@@ -208,6 +236,12 @@ class PageIR:
                     severity=issue["severity"],
                     code=issue["code"],
                     message=issue["message"],
+                    pdf_page=(
+                        int(issue["pdf_page"])
+                        if issue.get("pdf_page") is not None
+                        else None
+                    ),
+                    manual_page=issue.get("manual_page"),
                 )
                 for issue in data.get("issues", [])
             ],

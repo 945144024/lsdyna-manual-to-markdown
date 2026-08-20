@@ -39,6 +39,12 @@ def test_store_paddle_bundle_splits_layout_results_by_page(tmp_path):
         metadata={
             "job_data": {"state": "done"},
             "timing": {"total_seconds": 12.5},
+            "transport": {
+                "llama_cpp_sse_byte_recovery": {
+                    "count": 1,
+                    "reason": "expected_peg_native_format",
+                }
+            },
         },
     )
 
@@ -59,8 +65,15 @@ def test_store_paddle_bundle_splits_layout_results_by_page(tmp_path):
     assert stored.page_artifacts[0].markdown_path.read_text() == "# page one"
     job_metadata = json.loads(stored.job_metadata_path.read_text())
     assert job_metadata["timing"] == {"total_seconds": 12.5}
+    assert job_metadata["transport"] == {
+        "llama_cpp_sse_byte_recovery": {
+            "count": 1,
+            "reason": "expected_peg_native_format",
+        }
+    }
     page_record = json.loads(stored.page_artifacts[0].json_path.read_text())
     assert page_record["pdf_page"] == 197
+    assert page_record["transport"] == job_metadata["transport"]
     assert page_record["layout_result"]["markdown"]["text"] == "# page one"
 
 
@@ -88,6 +101,108 @@ def test_store_paddle_bundle_rejects_page_count_mismatch(tmp_path):
             batch_id=1,
             input_pdf_path=input_pdf,
         )
+
+
+def test_store_paddle_bundle_projects_structured_blocks_to_debug_markdown(tmp_path):
+    input_pdf = tmp_path / "input.pdf"
+    input_pdf.write_bytes(b"%PDF-1.4 minimal")
+    raw_jsonl = json.dumps(
+        {
+            "result": {
+                "layoutParsingResults": [
+                    {
+                        "prunedResult": {
+                            "parsing_res_list": [
+                                {
+                                    "block_label": "header",
+                                    "block_content": "*MAT_EXAMPLE",
+                                },
+                                {
+                                    "block_label": "text",
+                                    "block_content": "Purpose text",
+                                },
+                                {
+                                    "block_label": "image",
+                                    "block_content": "",
+                                },
+                                {
+                                    "block_label": "table",
+                                    "block_content": "<table><tr><td>MID</td></tr></table>",
+                                },
+                            ]
+                        }
+                    }
+                ]
+            }
+        }
+    )
+    job_result = ProviderJobResult(
+        provider="paddleocr-vl-local",
+        model="PaddleOCR-VL-1.6",
+        job_id="local-job-1",
+        state="done",
+        raw_jsonl_text=raw_jsonl,
+    )
+
+    stored = store_paddle_bundle(
+        job_result,
+        root=tmp_path / "raw",
+        document_id="keyword-volume-1",
+        volume=1,
+        pdf_pages=[17],
+        batch_id=1,
+        input_pdf_path=input_pdf,
+    )
+
+    assert stored.page_artifacts[0].markdown_path.read_text() == (
+        "*MAT_EXAMPLE\n\nPurpose text\n\n"
+        "<table><tr><td>MID</td></tr></table>"
+    )
+
+
+def test_store_paddle_bundle_prefers_provider_markdown_over_debug_projection(
+    tmp_path,
+):
+    input_pdf = tmp_path / "input.pdf"
+    input_pdf.write_bytes(b"%PDF-1.4 minimal")
+    raw_jsonl = json.dumps(
+        {
+            "result": {
+                "layoutParsingResults": [
+                    {
+                        "markdown": {"text": "# Provider Markdown"},
+                        "prunedResult": {
+                            "parsing_res_list": [
+                                {"block_content": "structured fallback"}
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+    )
+    job_result = ProviderJobResult(
+        provider="paddleocr-vl-local",
+        model="PaddleOCR-VL-1.6",
+        job_id="local-job-1",
+        state="done",
+        raw_jsonl_text=raw_jsonl,
+    )
+
+    stored = store_paddle_bundle(
+        job_result,
+        root=tmp_path / "raw",
+        document_id="keyword-volume-1",
+        volume=1,
+        pdf_pages=[17],
+        batch_id=1,
+        input_pdf_path=input_pdf,
+    )
+
+    assert (
+        stored.page_artifacts[0].markdown_path.read_text()
+        == "# Provider Markdown"
+    )
 
 
 def test_job_metadata_redacts_signed_result_url(tmp_path):

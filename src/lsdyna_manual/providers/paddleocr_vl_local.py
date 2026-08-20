@@ -134,7 +134,9 @@ class PaddleOCRVLLocalProvider(DocumentProvider):
             f"{self.local_config.worker_start_timeout_seconds}s"
         )
 
-    def _predict(self, input_pdf_path: Path) -> dict[str, Any]:
+    def _predict(
+        self, input_pdf_path: Path
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
             import requests
 
@@ -153,7 +155,10 @@ class PaddleOCRVLLocalProvider(DocumentProvider):
         layout_result = payload.get("layout_result")
         if not isinstance(layout_result, dict):
             raise ProviderError("local PaddleOCR worker returned no layout result")
-        return layout_result
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise ProviderError("local PaddleOCR worker returned invalid metadata")
+        return layout_result, metadata
 
     @staticmethod
     def _value_from_result(result: Any) -> Any:
@@ -243,7 +248,7 @@ class PaddleOCRVLLocalProvider(DocumentProvider):
         if on_progress is not None:
             on_progress("local_started", {"job_id": "pending"})
         try:
-            layout_result = self._predict(input_pdf_path)
+            layout_result, worker_metadata = self._predict(input_pdf_path)
         except Exception as exc:
             if isinstance(exc, ProviderError):
                 raise
@@ -263,6 +268,7 @@ class PaddleOCRVLLocalProvider(DocumentProvider):
             metadata={
                 "runtime": "local",
                 "timing": {"total_seconds": round(time.monotonic() - started, 3)},
+                "transport": worker_metadata,
             },
         )
 

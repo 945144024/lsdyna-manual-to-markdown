@@ -14,12 +14,16 @@ import pytest
 
 import lsdyna_manual.pipeline as pipeline
 from lsdyna_manual.config import ConfigError
+from lsdyna_manual.corpus_quality import measure_corpus
 from lsdyna_manual.pipeline import (
     EXIT_PAUSED,
     ParsingResult,
     ReconstructionResult,
     run_build,
+    run_reconstruction,
 )
+from lsdyna_manual.parser.page_ir import PageIR, ParseIssue, TextBlock, save_page_ir
+from lsdyna_manual.parser.parse_state import PageParseState, ParseStateStore
 from lsdyna_manual.providers.base import ProviderJobResult
 
 CONFIG_TEMPLATE = """\
@@ -159,6 +163,24 @@ def _stub_build_stages(monkeypatch, corpus, *, reconstruction_status="success"):
     return calls
 
 
+def test_source_hash_is_cached_per_document(monkeypatch, tmp_path):
+    source = tmp_path / "manual.pdf"
+    source.write_bytes(b"synthetic pdf bytes")
+    document = SimpleNamespace(document_id="keyword-volume-1", path=source)
+    calls = []
+
+    def digest(path):
+        calls.append(path)
+        return "source-digest"
+
+    monkeypatch.setattr(pipeline, "sha256_of", digest)
+    cache = {}
+
+    assert pipeline._source_sha256_for(document, cache) == "source-digest"
+    assert pipeline._source_sha256_for(document, cache) == "source-digest"
+    assert calls == [source]
+
+
 def test_build_runs_one_click_pipeline_success(monkeypatch, tmp_path):
     manuals = tmp_path / "manuals"
     manuals.mkdir()
@@ -245,15 +267,306 @@ def test_build_real_parse_and_reconstruct_from_one_entry(monkeypatch, tmp_path):
     assert result.completed_pages == result.total_pages == 1
     assert result.section_count == 1
     assert provider.calls == 1
+    assert result.documents[0]["status"] == "success"
+    assert result.documents[0]["parse_completed"] == 1
     record = json.loads((corpus / "manifest.jsonl").read_text(encoding="utf-8"))
     assert record["keyword_id"] == "MAT_TEST"
     assert (corpus / record["markdown_path"]).is_file()
+    summary = json.loads(
+        (corpus / "reports" / "summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["parse_total"] == 1
+    assert summary["parse_completed"] == 1
+    assert summary["parse_failed"] == 0
+    assert summary["parse_missing"] == 0
 
     resumed = run_build(config, provider=provider, log=lambda _msg: None)
 
     assert resumed.status == "success"
     assert resumed.completed_pages == 1
     assert provider.calls == 1
+
+    baseline = tmp_path / "acceptance.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1",
+                "expected": measure_corpus(corpus),
+                "required_evidence": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + f'quality_gate:\n  baseline: "{baseline}"\n',
+        encoding="utf-8",
+    )
+
+    accepted = run_build(config, provider=provider, log=lambda _msg: None)
+
+    assert accepted.status == "success"
+    assert json.loads(
+        (corpus / "reports/acceptance.json").read_text(encoding="utf-8")
+    )["status"] == "passed"
+
+    payload = json.loads(baseline.read_text(encoding="utf-8"))
+    payload["expected"]["release"] = "R16"
+    baseline.write_text(json.dumps(payload), encoding="utf-8")
+
+    rejected = run_build(config, provider=provider, log=lambda _msg: None)
+
+    assert rejected.status == "failed"
+    assert rejected.exit_code == pipeline.EXIT_FAILED
+
+
+def test_reconstruct_reports_parse_coverage_and_all_stage_issues(
+    monkeypatch, tmp_path
+):
+    manuals = tmp_path / "manuals"
+    manuals.mkdir()
+    _make_synthetic_manual(
+        manuals, "LS-DYNA_Manual_Vol_I_R17.pdf", pages=3
+    )
+    corpus = tmp_path / "corpus"
+    config = _write_config(tmp_path, manuals, corpus)
+    intermediate = corpus / "intermediate" / "keyword-volume-1"
+    intermediate.mkdir(parents=True)
+    document = {
+        "document_id": "keyword-volume-1",
+        "manual_type": "keyword",
+        "release": "R17",
+        "volume": 1,
+    }
+    (intermediate / "pagemap.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1",
+                "document": document,
+                "pages": [
+                    {
+                        "pdf_page": page,
+                        "manual_page": f"1-{page}",
+                        "evidence": "test",
+                    }
+                    for page in range(1, 4)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (intermediate / "sectionmap.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1",
+                "document": document,
+                "sections": [
+                    {
+                        "section_id": "MAT_TEST",
+                        "keyword_id": "MAT_TEST",
+                        "name": "*MAT_TEST",
+                        "volume": 1,
+                        "kind": "keyword",
+                        "parent_section_id": None,
+                        "pdf_pages": [1, 2, 3],
+                        "manual_pages": ["1-1", "1-2", "1-3"],
+                        "document_id": "keyword-volume-1",
+                        "section_number": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (intermediate / "issues.jsonl").write_text(
+        json.dumps(
+            {
+                "document_id": "keyword-volume-1",
+                "manual_type": "keyword",
+                "volume": 1,
+                "pdf_page": 1,
+                "manual_page": "1-1",
+                "keyword_id": "MAT_TEST",
+                "severity": "warning",
+                "code": "ANCHOR_CONFLICT",
+                "message": "synthetic inspection conflict",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pageir_path = (
+        corpus
+        / "parsing"
+        / "pageir"
+        / "keyword-volume-1"
+        / "page_000001.json"
+    )
+    save_page_ir(
+        PageIR(
+            document_id="keyword-volume-1",
+            pdf_page=1,
+            manual_page="stale-1",
+            blocks=[TextBlock(text="*MAT_TEST"), TextBlock(text="Body")],
+            issues=[
+                ParseIssue(
+                    severity="warning",
+                    code="CURRENT_MANUAL_PAGE",
+                    message="synthetic issue must use the current PageMap",
+                ),
+                ParseIssue(
+                    severity="warning",
+                    code="EXPLICIT_PAGE_ONLY",
+                    message="synthetic issue with a page but no manual label",
+                    pdf_page=9,
+                )
+            ],
+        ),
+        pageir_path,
+    )
+    state_store = ParseStateStore(corpus / "parsing" / "state.json")
+    state_store.set(
+        PageParseState(
+            document_id="keyword-volume-1",
+            volume=1,
+            pdf_page=2,
+            status="failed",
+            error="synthetic provider format failure",
+        )
+    )
+    save_page_ir(
+        PageIR(
+            document_id="keyword-volume-1",
+            pdf_page=2,
+            manual_page="1-2",
+            blocks=[TextBlock(text="STALE PAGEIR MUST NOT BE RENDERED")],
+        ),
+        corpus / "parsing" / "pageir" / "keyword-volume-1" / "page_000002.json",
+    )
+
+    result = run_reconstruction(config, log=lambda _message: None)
+
+    assert result.status == "warning"
+    summary = json.loads(
+        (corpus / "reports" / "summary.json").read_text(encoding="utf-8")
+    )
+    assert {
+        key: summary[key]
+        for key in (
+            "parse_total",
+            "parse_completed",
+            "parse_failed",
+            "parse_missing",
+        )
+    } == {
+        "parse_total": 3,
+        "parse_completed": 1,
+        "parse_failed": 1,
+        "parse_missing": 1,
+    }
+    assert summary["parse_total"] == (
+        summary["parse_completed"]
+        + summary["parse_failed"]
+        + summary["parse_missing"]
+    )
+    assert summary["documents"] == [
+        {
+            **document,
+            "source_file": "LS-DYNA_Manual_Vol_I_R17.pdf",
+            "support_level": "verified",
+            "status": "warning",
+            "parse_total": 3,
+            "parse_completed": 1,
+            "parse_failed": 1,
+            "parse_missing": 1,
+        }
+    ]
+    issues = [
+        json.loads(line)
+        for line in (corpus / "reports" / "issues.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    parse_failure = next(
+        issue for issue in issues if issue["code"] == "PAGE_PARSE_FAILED"
+    )
+    assert parse_failure == {
+        "document_id": "keyword-volume-1",
+        "manual_type": "keyword",
+        "volume": 1,
+        "pdf_page": 2,
+        "manual_page": "1-2",
+        "keyword_id": None,
+        "section_id": None,
+        "severity": "error",
+        "code": "PAGE_PARSE_FAILED",
+        "message": "synthetic provider format failure",
+    }
+    missing_page = next(
+        issue
+        for issue in issues
+        if issue["code"] == "SECTION_PAGEIR_MISSING"
+        and "page 3" in issue["message"]
+    )
+    assert missing_page["pdf_page"] == 3
+    assert missing_page["manual_page"] == "1-3"
+    markdown_text = (corpus / "markdown" / "volume-1" / "MAT" / "MAT_TEST.md").read_text(
+        encoding="utf-8"
+    )
+    assert "STALE PAGEIR MUST NOT BE RENDERED" not in markdown_text
+    assert any(issue["code"] == "ANCHOR_CONFLICT" for issue in issues)
+    inspection_issue = next(
+        issue for issue in issues if issue["code"] == "ANCHOR_CONFLICT"
+    )
+    assert inspection_issue["section_id"] is None
+    explicit_page_issue = next(
+        issue for issue in issues if issue["code"] == "EXPLICIT_PAGE_ONLY"
+    )
+    assert explicit_page_issue["pdf_page"] == 9
+    assert explicit_page_issue["manual_page"] is None
+    current_page_issue = next(
+        issue for issue in issues if issue["code"] == "CURRENT_MANUAL_PAGE"
+    )
+    assert (current_page_issue["pdf_page"], current_page_issue["manual_page"]) == (
+        1,
+        "1-1",
+    )
+    assert summary["issue_count"] == len(issues)
+    assert sum(summary["issues_by_severity"].values()) == len(issues)
+    assert sum(summary["issues_by_code"].values()) == len(issues)
+
+    stale_failure = state_store.get("keyword-volume-1", 2)
+    assert stale_failure is not None
+    stale_failure.source_sha256 = "stale-source-digest"
+    state_store.set(stale_failure)
+
+    stale_result = run_reconstruction(config, log=lambda _message: None)
+    stale_summary = json.loads(
+        (corpus / "reports" / "summary.json").read_text(encoding="utf-8")
+    )
+    stale_issues = [
+        json.loads(line)
+        for line in (corpus / "reports" / "issues.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert stale_result.status == "warning"
+    assert stale_summary["parse_failed"] == 0
+    assert stale_summary["parse_missing"] == 2
+    assert not any(issue["code"] == "PAGE_PARSE_FAILED" for issue in stale_issues)
+
+    def fail_ingest(_document):
+        raise OSError("synthetic metadata failure")
+
+    monkeypatch.setattr(pipeline, "ingest_document", fail_ingest)
+    failed_result = run_reconstruction(config, log=lambda _message: None)
+    failed_summary = json.loads(
+        (corpus / "reports" / "summary.json").read_text(encoding="utf-8")
+    )
+    assert failed_result.status == "failed"
+    assert failed_summary["status"] == "failed"
+    assert failed_summary["documents"][0]["status"] == "failed"
+    assert failed_summary["issues_by_code"]["DOCUMENT_INGEST_FAILED"] == 1
 
 
 def test_build_accepts_keyword_subset(monkeypatch, tmp_path):

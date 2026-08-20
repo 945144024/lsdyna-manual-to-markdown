@@ -45,6 +45,22 @@ def test_api_key_may_be_absent_for_local_pipeline_stages(tmp_path):
     config = load_config(_write_config(tmp_path, None))
     assert config.parser.api_key is None
     assert config.parser.max_batch_pages == 1
+    assert config.quality_gate.baseline is None
+
+
+def test_quality_gate_baseline_is_loaded(tmp_path):
+    path = _write_config(tmp_path, None)
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "quality_gate:\n  baseline: docs/r17-corpus-acceptance-v0.1.json\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config.quality_gate.baseline.as_posix() == (
+        "docs/r17-corpus-acceptance-v0.1.json"
+    )
 
 
 def test_remote_provider_requires_explicit_api_key():

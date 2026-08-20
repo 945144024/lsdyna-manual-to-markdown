@@ -72,8 +72,20 @@ class SectionIR:
         }
 
 
-def _issue(code: str, message: str, *, severity: str = "warning") -> ParseIssue:
-    return ParseIssue(severity=severity, code=code, message=message)
+def _issue(
+    code: str,
+    message: str,
+    *,
+    severity: str = "warning",
+    source: SectionSourcePage | None = None,
+) -> ParseIssue:
+    return ParseIssue(
+        severity=severity,
+        code=code,
+        message=message,
+        pdf_page=source.pdf_page if source is not None else None,
+        manual_page=source.manual_page if source is not None else None,
+    )
 
 
 def _theory_numbers(section: SectionIR | Section) -> tuple[int, ...]:
@@ -156,6 +168,7 @@ def assemble_sections(
                             "ancestor/descendant Theory range; ownership is "
                             "resolved by numeric section hierarchy",
                             severity="info",
+                            source=source_page,
                         )
                     )
                 else:
@@ -164,6 +177,7 @@ def assemble_sections(
                             "SECTION_SHARED_BOUNDARY_PAGE",
                             f"PDF page {source_page.pdf_page} is shared by multiple "
                             "SectionMap candidates; content is preserved for review",
+                            source=source_page,
                         )
                     )
             page_ir = page_irs.get((section.document_id or "", source_page.pdf_page))
@@ -172,6 +186,7 @@ def assemble_sections(
                     _issue(
                         "SECTION_PAGEIR_MISSING",
                         f"PageIR is missing for PDF page {source_page.pdf_page}",
+                        source=source_page,
                     )
                 )
                 continue
@@ -184,9 +199,20 @@ def assemble_sections(
                     _issue(
                         "SECTION_CONTENT_EMPTY",
                         f"PageIR for PDF page {source_page.pdf_page} has no blocks",
+                        source=source_page,
                     )
                 )
-            issues.extend(page_ir.issues)
+            issues.extend(
+                issue.with_page_source(
+                    pdf_page=page_ir.pdf_page,
+                    manual_page=(
+                        page_ir.manual_page
+                        if page_ir.manual_page is not None
+                        else source_page.manual_page
+                    ),
+                )
+                for issue in page_ir.issues
+            )
 
         if not pages:
             status = "failed"

@@ -62,7 +62,41 @@ def test_assemble_sections_preserves_source_range_and_missing_pages():
     assert [item.pdf_page for item in result.source_pages] == [1, 2]
     assert [item.pdf_page for item in result.pages] == [1]
     assert result.status == "warning"
-    assert any(issue.code == "SECTION_PAGEIR_MISSING" for issue in result.issues)
+    missing = next(
+        issue for issue in result.issues if issue.code == "SECTION_PAGEIR_MISSING"
+    )
+    assert (missing.pdf_page, missing.manual_page) == (2, "2-2")
+
+
+def test_assemble_sections_fills_pageir_issue_provenance_without_mutating_page():
+    page_issue = ParseIssue(
+        severity="warning",
+        code="TABLE_STRUCTURE_UNCERTAIN",
+        message="inspect table",
+    )
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page=None,
+        blocks=[TextBlock(text="body")],
+        issues=[page_issue],
+    )
+
+    result = assemble_sections(
+        [_section((1,))], {("keyword-volume-2", 1): page}
+    )[0]
+    reconstructed_issue = next(
+        issue
+        for issue in result.issues
+        if issue.code == "TABLE_STRUCTURE_UNCERTAIN"
+    )
+
+    assert (reconstructed_issue.pdf_page, reconstructed_issue.manual_page) == (
+        1,
+        "2-1",
+    )
+    assert page_issue.pdf_page is None
+    assert page_issue.manual_page is None
 
 
 def test_source_blank_page_does_not_create_empty_content_warning():
@@ -116,6 +150,15 @@ def test_assemble_sections_marks_shared_boundary_pages():
     assert all(result.status == "warning" for result in results)
     assert all(
         any(issue.code == "SECTION_SHARED_BOUNDARY_PAGE" for issue in result.issues)
+        for result in results
+    )
+    assert all(
+        [
+            (issue.pdf_page, issue.manual_page)
+            for issue in result.issues
+            if issue.code == "SECTION_SHARED_BOUNDARY_PAGE"
+        ]
+        == [(1, "2-1")]
         for result in results
     )
 
@@ -222,6 +265,161 @@ def test_theory_ir_assigns_parent_and_siblings_by_title_anchors():
         not any(issue.code == "SECTION_SHARED_BOUNDARY_PAGE" for issue in theory.issues)
         for theory in theories
     )
+    parent_boundary = next(
+        issue
+        for issue in by_id["35"].issues
+        if issue.code == "THEORY_BOUNDARY_RESOLVED"
+    )
+    assert (parent_boundary.pdf_page, parent_boundary.manual_page) == (1, "35-1")
+
+
+def test_theory_title_anchor_accepts_presentation_only_variants():
+    cases = [
+        ("6.4", "Shell ±29", r"6.4 Shell $\pm29$"),
+        ("11.1", "C0 formulation", r"11.1 C $ ^{0} $ formulation"),
+        ("23.36", "Fung's model", "23.36 Fung’s model"),
+        ("23.83", "Rigid body mechanics", "23.83 Rigid_body mechanics"),
+    ]
+
+    for page_number, (number, title, anchor) in enumerate(cases, start=1):
+        section = Section(
+            section_id=number,
+            keyword_id=None,
+            name=title,
+            volume=None,
+            kind="theory",
+            parent_section_id=None,
+            pdf_pages=[page_number],
+            manual_pages=[f"{number}-1"],
+            document_id="theory",
+            section_number=number,
+        )
+        page = PageIR(
+            document_id="theory",
+            pdf_page=page_number,
+            manual_page=f"{number}-1",
+            blocks=[TextBlock(text=anchor), TextBlock(text="Body")],
+        )
+
+        theory = reconstruct_theory(
+            assemble_sections([section], {("theory", page_number): page})
+        )[0]
+
+        assert theory.status == "success"
+        assert [block.block.text for block in theory.content_blocks] == [
+            anchor,
+            "Body",
+        ]
+        assert not any(
+            issue.code == "THEORY_TITLE_ANCHOR_MISSING"
+            for issue in theory.issues
+        )
+
+
+def test_theory_title_anchor_prefers_exact_over_longer_prefix():
+    section = Section(
+        section_id="23.120",
+        keyword_id=None,
+        name="Exact title",
+        volume=None,
+        kind="theory",
+        parent_section_id=None,
+        pdf_pages=[1],
+        manual_pages=["23-120"],
+        document_id="theory",
+        section_number="23.120",
+    )
+    page = PageIR(
+        document_id="theory",
+        pdf_page=1,
+        manual_page="23-120",
+        blocks=[
+            TextBlock(text="23.120 Exact title extra suffix"),
+            TextBlock(text="Prefix-owned text"),
+            TextBlock(text="23.120 Exact title"),
+            TextBlock(text="Exact body"),
+        ],
+    )
+
+    theory = reconstruct_theory(
+        assemble_sections([section], {("theory", 1): page})
+    )[0]
+
+    assert [block.block.text for block in theory.content_blocks] == [
+        "23.120 Exact title",
+        "Exact body",
+    ]
+    assert theory.status == "success"
+
+
+def test_theory_title_anchor_accepts_header_number_followed_by_text_title():
+    section = Section(
+        section_id="12",
+        keyword_id=None,
+        name="Special theory",
+        volume=None,
+        kind="theory",
+        parent_section_id=None,
+        pdf_pages=[1],
+        manual_pages=["12-1"],
+        document_id="theory",
+        section_number="12",
+    )
+    page = PageIR(
+        document_id="theory",
+        pdf_page=1,
+        manual_page="12-1",
+        blocks=[
+            HeaderBlock(text="12"),
+            TextBlock(text="Special_theory"),
+            TextBlock(text="Body"),
+        ],
+    )
+
+    theory = reconstruct_theory(
+        assemble_sections([section], {("theory", 1): page})
+    )[0]
+
+    assert [block.block.text for block in theory.content_blocks] == [
+        "Special_theory",
+        "Body",
+    ]
+    assert theory.status == "success"
+
+
+def test_theory_root_title_without_number_keeps_missing_anchor_warning():
+    section = Section(
+        section_id="45",
+        keyword_id=None,
+        name="Linear shells",
+        volume=None,
+        kind="theory",
+        parent_section_id=None,
+        pdf_pages=[1],
+        manual_pages=["45-1"],
+        document_id="theory",
+        section_number="45",
+    )
+    page = PageIR(
+        document_id="theory",
+        pdf_page=1,
+        manual_page="45-1",
+        blocks=[TextBlock(text="Linear shells"), TextBlock(text="Body")],
+    )
+
+    theory = reconstruct_theory(
+        assemble_sections([section], {("theory", 1): page})
+    )[0]
+
+    assert theory.status == "warning"
+    assert any(
+        issue.code == "THEORY_TITLE_ANCHOR_MISSING"
+        for issue in theory.issues
+    )
+    assert [block.block.text for block in theory.content_blocks] == [
+        "Linear shells",
+        "Body",
+    ]
 
 
 def test_assemble_sections_attaches_legacy_ids():
@@ -315,6 +513,15 @@ def test_keyword_ir_splits_shared_page_at_strong_title_anchor(tmp_path):
         any(issue.code == "KEYWORD_BOUNDARY_RESOLVED" for issue in keyword.issues)
         for keyword in keywords
     )
+    assert all(
+        [
+            (issue.pdf_page, issue.manual_page)
+            for issue in keyword.issues
+            if issue.code == "KEYWORD_BOUNDARY_RESOLVED"
+        ]
+        == [(2, "1-2")]
+        for keyword in keywords
+    )
     assert not any(
         issue.code == "KEYWORD_BOUNDARY_AMBIGUOUS"
         for keyword in keywords
@@ -329,6 +536,366 @@ def test_keyword_ir_splits_shared_page_at_strong_title_anchor(tmp_path):
     assert "B body" not in first_markdown
     assert "*EOS_B" in second_markdown
     assert "B body" in second_markdown
+
+
+def test_keyword_boundary_accepts_presentation_variants_and_option_placeholders():
+    anchors = [
+        " $ ^{*} $ EOS B-C",
+        r"$\mathrm{*EOS\_B\_C}$",
+        "*EOS_B_C_{OPTION}",
+        "*EOS B C {OPTIONS}",
+    ]
+
+    for anchor in anchors:
+        first = Section(
+            section_id="EOS_A",
+            keyword_id="EOS_A",
+            name="*EOS_A",
+            volume=2,
+            kind="keyword",
+            parent_section_id=None,
+            pdf_pages=[1, 2],
+            manual_pages=["2-1", "2-2"],
+            document_id="keyword-volume-2",
+            section_number=None,
+        )
+        second = Section(
+            section_id="EOS_B_C",
+            keyword_id="EOS_B_C",
+            name="*EOS_B_C",
+            volume=2,
+            kind="keyword",
+            parent_section_id=None,
+            pdf_pages=[2, 3],
+            manual_pages=["2-2", "2-3"],
+            document_id="keyword-volume-2",
+            section_number=None,
+        )
+        pages = {
+            ("keyword-volume-2", 1): PageIR(
+                document_id="keyword-volume-2",
+                pdf_page=1,
+                manual_page="2-1",
+                blocks=[TextBlock(text="A body")],
+            ),
+            ("keyword-volume-2", 2): PageIR(
+                document_id="keyword-volume-2",
+                pdf_page=2,
+                manual_page="2-2",
+                blocks=[
+                    TextBlock(text="A continuation"),
+                    HeaderBlock(text="*EOS_B_C"),
+                    TextBlock(text=anchor),
+                    TextBlock(text="B body"),
+                ],
+            ),
+            ("keyword-volume-2", 3): PageIR(
+                document_id="keyword-volume-2",
+                pdf_page=3,
+                manual_page="2-3",
+                blocks=[TextBlock(text="B continuation")],
+            ),
+        }
+
+        keywords = reconstruct_keywords(
+            assemble_sections([first, second], pages)
+        )
+
+        assert all(
+            any(
+                issue.code == "KEYWORD_BOUNDARY_RESOLVED"
+                for issue in keyword.issues
+            )
+            for keyword in keywords
+        )
+        assert [
+            block.block.text
+            for block in keywords[1].accounted_blocks()
+            if block.source.pdf_page == 2
+        ] == [anchor, "B body"]
+
+
+def test_keyword_boundary_prefers_exact_title_over_option_placeholder():
+    first = Section(
+        "EOS_A",
+        "EOS_A",
+        "*EOS_A",
+        2,
+        "keyword",
+        None,
+        [1, 2],
+        ["2-1", "2-2"],
+        "keyword-volume-2",
+        None,
+    )
+    second = Section(
+        "EOS_B",
+        "EOS_B",
+        "*EOS_B",
+        2,
+        "keyword",
+        None,
+        [2, 3],
+        ["2-2", "2-3"],
+        "keyword-volume-2",
+        None,
+    )
+    pages = {
+        ("keyword-volume-2", 1): PageIR(
+            document_id="keyword-volume-2",
+            pdf_page=1,
+            manual_page="2-1",
+            blocks=[TextBlock(text="A body")],
+        ),
+        ("keyword-volume-2", 2): PageIR(
+            document_id="keyword-volume-2",
+            pdf_page=2,
+            manual_page="2-2",
+            blocks=[
+                TextBlock(text="A continuation"),
+                TextBlock(text="*EOS_B_{OPTION}"),
+                TextBlock(text="Still A-side source"),
+                TextBlock(text="*EOS_B"),
+                TextBlock(text="B body"),
+            ],
+        ),
+        ("keyword-volume-2", 3): PageIR(
+            document_id="keyword-volume-2",
+            pdf_page=3,
+            manual_page="2-3",
+            blocks=[TextBlock(text="B continuation")],
+        ),
+    }
+
+    first_keyword, second_keyword = reconstruct_keywords(
+        assemble_sections([first, second], pages)
+    )
+
+    assert [
+        block.block.text
+        for block in first_keyword.accounted_blocks()
+        if block.source.pdf_page == 2
+    ] == ["A continuation", "*EOS_B_{OPTION}", "Still A-side source"]
+    assert [
+        block.block.text
+        for block in second_keyword.accounted_blocks()
+        if block.source.pdf_page == 2
+    ] == ["*EOS_B", "B body"]
+
+
+def test_keyword_boundary_rejects_fuzzy_mentions_and_noncontiguous_duplicates():
+    candidates = [
+        [TextBlock(text="A continuation"), TextBlock(text="*EOS_C")],
+        [TextBlock(text="A continuation"), TextBlock(text="*EOS/B_C")],
+        [
+            TextBlock(text="A continuation"),
+            TextBlock(text="See *EOS_B for details."),
+        ],
+        [
+            TextBlock(text="A continuation"),
+            TextBlock(text="*EOS_B"),
+            TextBlock(text="unrelated source between repeated titles"),
+            TextBlock(text="*EOS_B"),
+            TextBlock(text="B body"),
+        ],
+    ]
+
+    for shared_blocks in candidates:
+        first = Section(
+            "EOS_A",
+            "EOS_A",
+            "*EOS_A",
+            2,
+            "keyword",
+            None,
+            [1, 2],
+            ["2-1", "2-2"],
+            "keyword-volume-2",
+            None,
+        )
+        second = Section(
+            "EOS_B",
+            "EOS_B",
+            "*EOS_B",
+            2,
+            "keyword",
+            None,
+            [2, 3],
+            ["2-2", "2-3"],
+            "keyword-volume-2",
+            None,
+        )
+        pages = {
+                ("keyword-volume-2", 1): PageIR(
+                    document_id="keyword-volume-2",
+                    pdf_page=1,
+                    manual_page="2-1",
+                    blocks=[TextBlock(text="A body")],
+                ),
+                ("keyword-volume-2", 2): PageIR(
+                    document_id="keyword-volume-2",
+                    pdf_page=2,
+                    manual_page="2-2",
+                    blocks=shared_blocks,
+                ),
+                ("keyword-volume-2", 3): PageIR(
+                    document_id="keyword-volume-2",
+                    pdf_page=3,
+                    manual_page="2-3",
+                    blocks=[TextBlock(text="B body")],
+                ),
+        }
+
+        keywords = reconstruct_keywords(
+            assemble_sections([first, second], pages)
+        )
+
+        assert all(
+            any(
+                issue.code == "KEYWORD_BOUNDARY_AMBIGUOUS"
+                for issue in keyword.issues
+            )
+            for keyword in keywords
+        )
+        assert not any(
+            issue.code == "KEYWORD_BOUNDARY_RESOLVED"
+            for keyword in keywords
+            for issue in keyword.issues
+        )
+
+
+def test_keyword_boundary_requires_header_for_missing_star_or_separator():
+    for anchor in ["EOS_B_C", "*EOS B C", "*EOS-B-C"]:
+        first = Section(
+            "EOS_A",
+            "EOS_A",
+            "*EOS_A",
+            2,
+            "keyword",
+            None,
+            [1, 2],
+            ["2-1", "2-2"],
+            "keyword-volume-2",
+            None,
+        )
+        second = Section(
+            "EOS_B_C",
+            "EOS_B_C",
+            "*EOS_B_C",
+            2,
+            "keyword",
+            None,
+            [2, 3],
+            ["2-2", "2-3"],
+            "keyword-volume-2",
+            None,
+        )
+        pages = {
+            ("keyword-volume-2", 1): PageIR(
+                document_id="keyword-volume-2",
+                pdf_page=1,
+                manual_page="2-1",
+                blocks=[TextBlock(text="A body")],
+            ),
+            ("keyword-volume-2", 2): PageIR(
+                document_id="keyword-volume-2",
+                pdf_page=2,
+                manual_page="2-2",
+                blocks=[TextBlock(text="A continuation"), TextBlock(text=anchor)],
+            ),
+            ("keyword-volume-2", 3): PageIR(
+                document_id="keyword-volume-2",
+                pdf_page=3,
+                manual_page="2-3",
+                blocks=[TextBlock(text="B continuation")],
+            ),
+        }
+        keywords = reconstruct_keywords(assemble_sections([first, second], pages))
+        assert all(
+            any(issue.code == "KEYWORD_BOUNDARY_AMBIGUOUS" for issue in keyword.issues)
+            for keyword in keywords
+        )
+
+
+def test_keyword_boundary_rejects_ordered_multi_owner_title_only_slice():
+    sections = [
+        Section(
+            "EOS_A",
+            "EOS_A",
+            "*EOS_A",
+            2,
+            "keyword",
+            None,
+            [1, 2],
+            ["2-1", "2-2"],
+            "keyword-volume-2",
+            None,
+        ),
+        Section(
+            "EOS_B",
+            "EOS_B",
+            "*EOS_B",
+            2,
+            "keyword",
+            None,
+            [2],
+            ["2-2"],
+            "keyword-volume-2",
+            None,
+        ),
+        Section(
+            "EOS_C",
+            "EOS_C",
+            "*EOS_C",
+            2,
+            "keyword",
+            None,
+            [2, 3],
+            ["2-2", "2-3"],
+            "keyword-volume-2",
+            None,
+        ),
+    ]
+    pages = {
+        ("keyword-volume-2", 1): PageIR(
+            document_id="keyword-volume-2",
+            pdf_page=1,
+            manual_page="2-1",
+            blocks=[TextBlock(text="A body")],
+        ),
+        ("keyword-volume-2", 2): PageIR(
+            document_id="keyword-volume-2",
+            pdf_page=2,
+            manual_page="2-2",
+            blocks=[
+                TextBlock(text="A continuation"),
+                TextBlock(text="*EOS_B"),
+                TextBlock(text="*EOS_C"),
+                TextBlock(text="Shared B/C body"),
+            ],
+        ),
+        ("keyword-volume-2", 3): PageIR(
+            document_id="keyword-volume-2",
+            pdf_page=3,
+            manual_page="2-3",
+            blocks=[TextBlock(text="C continuation")],
+        ),
+    }
+
+    keywords = reconstruct_keywords(assemble_sections(sections, pages))
+
+    assert all(
+        any(
+            issue.code == "KEYWORD_BOUNDARY_AMBIGUOUS"
+            for issue in keyword.issues
+        )
+        for keyword in keywords
+    )
+    assert not any(
+        issue.code == "KEYWORD_BOUNDARY_RESOLVED"
+        for keyword in keywords
+        for issue in keyword.issues
+    )
 
 
 def test_keyword_ir_preserves_ambiguous_shared_page_with_warning():
@@ -366,6 +933,15 @@ def test_keyword_ir_preserves_ambiguous_shared_page_with_warning():
     )
     assert all(
         len(keyword.unclassified_blocks) == 2 for keyword in keywords
+    )
+    assert all(
+        [
+            (issue.pdf_page, issue.manual_page)
+            for issue in keyword.issues
+            if issue.code == "KEYWORD_BOUNDARY_AMBIGUOUS"
+        ]
+        == [(2, "2-2")]
+        for keyword in keywords
     )
 
 
@@ -701,10 +1277,12 @@ def test_card_definition_missing_variable_row_retains_slots_with_issue():
     assert len(keyword.cards[0].fields) == 2
     assert all(field.variable is None for field in keyword.cards[0].fields)
     assert [field.field_type for field in keyword.cards[0].fields] == ["I", "F"]
-    assert any(
-        issue.code == "CARD_DEFINITION_VARIABLE_ROW_MISSING"
+    issue = next(
+        issue
         for issue in keyword.issues
+        if issue.code == "CARD_DEFINITION_VARIABLE_ROW_MISSING"
     )
+    assert (issue.pdf_page, issue.manual_page) == (1, "2-1")
     assert keyword.status == "warning"
     assert not validate_keyword_ir(keyword)
 
@@ -739,6 +1317,458 @@ def test_card_definition_reports_invalid_header_and_ambiguous_rows():
         "CARD_DEFINITION_ROW_AMBIGUOUS",
     }
     assert not validate_keyword_ir(keyword)
+
+
+def test_card_prose_summary_table_is_not_invented_as_definition():
+    table = TableBlock(
+        rows=[
+            _row(0, "Card", "Description"),
+            _row(1, "Card 1", "Required input data."),
+        ]
+    )
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[TextBlock(text="*MAT_EXAMPLE"), table],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert keyword.cards == []
+    assert [block.block for block in keyword.description_blocks] == [table]
+    assert not any(
+        issue.code.startswith("CARD_DEFINITION_") for issue in keyword.issues
+    )
+    assert not validate_keyword_ir(keyword)
+
+
+def test_card_definition_ignores_only_globally_trailing_empty_columns():
+    table = TableBlock(
+        rows=[
+            _row(0, "Card 1", "1", "2", "", ""),
+            _row(1, "Variable", "A", "B", "", ""),
+            _row(2, "Type", "F", "I", "", ""),
+            _row(3, "Default", "0.0", "1", "", ""),
+        ]
+    )
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[TextBlock(text="*MAT_EXAMPLE"), table],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert [
+        (field.slot, field.variable, field.field_type, field.default)
+        for field in keyword.cards[0].fields
+    ] == [
+        (1, "A", "F", "0.0"),
+        (2, "B", "I", "1"),
+    ]
+    assert not any(
+        issue.code == "CARD_DEFINITION_SLOT_HEADER_INVALID"
+        for issue in keyword.issues
+    )
+
+
+def test_card_definition_stops_at_explicit_variable_description_header():
+    table = TableBlock(
+        rows=[
+            _row(0, "Card 1", "1", "2"),
+            _row(1, "Variable", "A", "B"),
+            _row(2, "Type", "F", "I"),
+            _row(3, "VARIABLE", "DESCRIPTION", ""),
+            _row(4, "Variable", "This is prose, not a second Card row", ""),
+        ]
+    )
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[TextBlock(text="*MAT_EXAMPLE"), table],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert [field.variable for field in keyword.cards[0].fields] == ["A", "B"]
+    assert not any(
+        issue.code == "CARD_DEFINITION_ROW_AMBIGUOUS"
+        for issue in keyword.issues
+    )
+    assert not validate_keyword_ir(keyword)
+
+
+def test_ariable_header_is_accepted_as_explicit_variable_description_table():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1"),
+                    _row(1, "Variable", "A"),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "ARIABLE", "DESCRIPTION"),
+                    _row(1, "A", "Catalog-backed description."),
+                ]
+            ),
+        ],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert [item.variable for item in keyword.variable_descriptions] == ["A"]
+    assert keyword.variable_descriptions[0].tables[0].row_start == 1
+    assert not any(
+        issue.code
+        in {
+            "VARIABLE_DESCRIPTION_UNMATCHED_TITLE",
+            "VARIABLE_DESCRIPTION_CONTINUATION_ORPHAN",
+        }
+        for issue in keyword.issues
+    )
+
+
+def test_structurally_complete_unknown_card_label_is_accepted_off_boundary():
+    table = TableBlock(
+        rows=[
+            _row(0, "Additional option card", "1", "2"),
+            _row(1, "Variable", "A", "B"),
+            _row(2, "Type", "F", "I"),
+        ]
+    )
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[TextBlock(text="*MAT_EXAMPLE"), table],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert [card.label for card in keyword.cards] == ["Additional option card"]
+    assert [field.variable for field in keyword.cards[0].fields] == ["A", "B"]
+    assert keyword.variable_catalog == ["A", "B"]
+
+
+def test_later_card_definition_preseeds_earlier_variable_description_catalog():
+    description_table = TableBlock(
+        rows=[
+            _row(0, "VARIABLE", "DESCRIPTION"),
+            _row(1, "A", "Description before the Card definition."),
+        ]
+    )
+    card_table = TableBlock(
+        rows=[
+            _row(0, "Card 1", "1"),
+            _row(1, "Variable", "A"),
+            _row(2, "Type", "F"),
+        ]
+    )
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            description_table,
+            card_table,
+        ],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert keyword.variable_catalog == ["A"]
+    assert [item.variable for item in keyword.variable_descriptions] == ["A"]
+    assert not any(
+        issue.code
+        in {
+            "VARIABLE_DESCRIPTION_CATALOG_UNAVAILABLE",
+            "VARIABLE_DESCRIPTION_UNMATCHED_TITLE",
+        }
+        for issue in keyword.issues
+    )
+
+
+def test_card_field_slash_and_or_aliases_match_exact_unique_titles():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1", "2"),
+                    _row(1, "Variable", "PID/PSID", "BETA or MCID"),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "PID", "Part identifier."),
+                    _row(2, "PSID", "Part-set identifier."),
+                    _row(3, "BETA", "Angle value."),
+                    _row(4, "MCID", "Coordinate-system identifier."),
+                ]
+            ),
+        ],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert keyword.variable_catalog == ["PID/PSID", "BETA or MCID"]
+    descriptions = {
+        item.variable: item for item in keyword.variable_descriptions
+    }
+    assert set(descriptions) == {"PID", "PSID", "BETA", "MCID"}
+    assert descriptions["PID"].applies_to == ["PID/PSID"]
+    assert descriptions["PSID"].applies_to == ["PID/PSID"]
+    assert descriptions["BETA"].applies_to == ["BETA or MCID"]
+    assert descriptions["MCID"].applies_to == ["BETA or MCID"]
+    assert not any(
+        issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
+        for issue in keyword.issues
+    )
+
+
+def test_card_field_aliases_require_valid_syntax_and_unique_origin():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1", "2", "3"),
+                    _row(
+                        1,
+                        "Variable",
+                        "PID/PSID",
+                        "PID/OTHER",
+                        "BAD or prose value",
+                    ),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "PID", "Ambiguous across two Card fields."),
+                    _row(2, "BAD", "Malformed source cell."),
+                ]
+            ),
+        ],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert keyword.variable_descriptions == []
+    unmatched = [
+        issue.message
+        for issue in keyword.issues
+        if issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
+    ]
+    assert any("'PID'" in message for message in unmatched)
+    assert any("'BAD'" in message for message in unmatched)
+
+
+def test_variable_type_default_triplets_are_split_only_by_strict_grammar():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1", "2", "3", "4"),
+                    _row(
+                        1,
+                        "Variable Type Default",
+                        "TITLE A70 none",
+                        "RHO F 0.0",
+                        "INVALID FF none",
+                        "BAD-TOKEN I 0",
+                    ),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "TITLE", "Title text."),
+                    _row(2, "RHO", "Density."),
+                    _row(3, "INVALID", "Invalid type evidence."),
+                    _row(4, "BAD", "Invalid identifier evidence."),
+                ]
+            ),
+        ],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    fields = keyword.cards[0].fields
+    assert (fields[0].variable, fields[0].field_type, fields[0].default) == (
+        "TITLE",
+        "A70",
+        "none",
+    )
+    assert (fields[1].variable, fields[1].field_type, fields[1].default) == (
+        "RHO",
+        "F",
+        "0.0",
+    )
+    assert (fields[2].variable, fields[2].field_type, fields[2].default) == (
+        "INVALID FF none",
+        None,
+        None,
+    )
+    assert (fields[3].variable, fields[3].field_type, fields[3].default) == (
+        "BAD-TOKEN I 0",
+        None,
+        None,
+    )
+    assert [item.variable for item in keyword.variable_descriptions] == [
+        "TITLE",
+        "RHO",
+    ]
+    unmatched = [
+        issue.message
+        for issue in keyword.issues
+        if issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
+    ]
+    assert any("'INVALID'" in message for message in unmatched)
+    assert any("'BAD'" in message for message in unmatched)
+
+
+def test_variable_type_default_triplet_rejects_extra_row_semantics():
+    page = PageIR(
+        document_id="keyword-volume-2",
+        pdf_page=1,
+        manual_page="2-1",
+        blocks=[
+            TextBlock(text="*MAT_EXAMPLE"),
+            TableBlock(
+                rows=[
+                    _row(0, "Card 1", "1"),
+                    _row(1, "Variable Type Default Remarks", "A F 0.0"),
+                ]
+            ),
+            TableBlock(
+                rows=[
+                    _row(0, "VARIABLE", "DESCRIPTION"),
+                    _row(1, "A", "No exact compressed-row contract."),
+                ]
+            ),
+        ],
+    )
+
+    keyword = reconstruct_keywords(
+        assemble_sections([_section((1,))], {("keyword-volume-2", 1): page})
+    )[0]
+
+    assert keyword.cards[0].fields[0].variable is None
+    assert any(
+        issue.code == "CARD_DEFINITION_VARIABLE_ROW_MISSING"
+        for issue in keyword.issues
+    )
+    assert any(
+        issue.code == "VARIABLE_DESCRIPTION_CATALOG_UNAVAILABLE"
+        for issue in keyword.issues
+    )
+
+
+def test_shared_keyword_boundary_disables_structural_unknown_card_fallback():
+    first = Section(
+        "MAT_FIRST",
+        "MAT_FIRST",
+        "*MAT_FIRST",
+        2,
+        "keyword",
+        None,
+        [1, 2],
+        ["2-1", "2-2"],
+        "keyword-volume-2",
+        None,
+    )
+    second = Section(
+        "MAT_SECOND",
+        "MAT_SECOND",
+        "*MAT_SECOND",
+        2,
+        "keyword",
+        None,
+        [2, 3],
+        ["2-2", "2-3"],
+        "keyword-volume-2",
+        None,
+    )
+    structural_table = TableBlock(
+        rows=[
+            _row(0, "Unknown option card", "1", "2"),
+            _row(1, "Variable", "A", "B"),
+        ]
+    )
+    pages = {
+        ("keyword-volume-2", 1): PageIR(
+            document_id="keyword-volume-2",
+            pdf_page=1,
+            manual_page="2-1",
+            blocks=[TextBlock(text="First body")],
+        ),
+        ("keyword-volume-2", 2): PageIR(
+            document_id="keyword-volume-2",
+            pdf_page=2,
+            manual_page="2-2",
+            blocks=[TextBlock(text="Unresolved shared body"), structural_table],
+        ),
+        ("keyword-volume-2", 3): PageIR(
+            document_id="keyword-volume-2",
+            pdf_page=3,
+            manual_page="2-3",
+            blocks=[TextBlock(text="Second body")],
+        ),
+    }
+
+    keywords = reconstruct_keywords(
+        assemble_sections([first, second], pages)
+    )
+
+    assert all(keyword.cards == [] for keyword in keywords)
+    assert all(keyword.variable_catalog == [] for keyword in keywords)
+    assert all(
+        any(
+            issue.code == "KEYWORD_BOUNDARY_AMBIGUOUS"
+            for issue in keyword.issues
+        )
+        for keyword in keywords
+    )
 
 
 def test_card_conditions_are_structured_without_rewriting_source(tmp_path):
@@ -977,10 +2007,12 @@ def test_variable_description_unmatched_text_remains_raw_with_issue():
         "UNKNOWN",
         "Unknown description body.",
     ]
-    assert any(
-        issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
+    issue = next(
+        issue
         for issue in keyword.issues
+        if issue.code == "VARIABLE_DESCRIPTION_UNMATCHED_TITLE"
     )
+    assert (issue.pdf_page, issue.manual_page) == (1, "2-1")
     assert not validate_keyword_ir(keyword)
 
 

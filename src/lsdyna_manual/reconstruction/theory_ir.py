@@ -30,39 +30,118 @@ class TheoryIR:
         return "theory"
 
 
-def _issue(code: str, message: str, *, severity: str = "warning") -> ParseIssue:
-    return ParseIssue(severity=severity, code=code, message=message)
+def _issue(
+    code: str,
+    message: str,
+    *,
+    severity: str = "warning",
+    source: BlockSourceRef | SectionSourcePage | None = None,
+) -> ParseIssue:
+    return ParseIssue(
+        severity=severity,
+        code=code,
+        message=message,
+        pdf_page=source.pdf_page if source is not None else None,
+        manual_page=source.manual_page if source is not None else None,
+    )
 
 
 def _normalize(text: str) -> str:
+    """Normalize presentation-only title differences conservatively."""
+
     value = unicodedata.normalize("NFKD", text)
-    value = value.replace("—", "-").replace("–", "-")
+    value = (
+        value.replace("—", "-")
+        .replace("–", "-")
+        .replace("’", "'")
+        .replace("‘", "'")
+        .replace("“", '"')
+        .replace("”", '"')
+    )
+    value = value.replace("$", "")
+    value = re.sub(r"\\pm(?=\s|[-+0-9]|$)", "±", value)
+    value = re.sub(r"\\mp(?=\s|[-+0-9]|$)", "∓", value)
+    value = re.sub(
+        r"\\(?:mathrm|text|textrm|rm|bf|mathbf|mathit|it)\s*",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"\s*\^\s*\{([^{}]*)\}", r"\1", value)
+    value = re.sub(r"_\s*\{([^{}]*)\}", r"_\1", value)
+    value = value.replace("{", "").replace("}", "")
+    value = value.replace("_", " ")
     return re.sub(r"\s+", " ", value).strip().casefold()
 
 
-def _title_anchor(section: SectionIR) -> tuple[int, int] | None:
+def _title_anchor_candidates(section: SectionIR) -> list[tuple[int, int, int]]:
+    """Return ``(pdf_page, block_index, rank)`` title candidates.
+
+    Rank 3 is an exact number/title anchor; rank 2 is a title-prefix anchor.
+    Exact candidates always outrank longer OCR/title prefixes.
+    """
+
     number = _normalize(section.section_number or section.section_id)
     title = _normalize(section.name)
-    anchors: list[tuple[int, int]] = []
+    expected = f"{number} {title}".strip()
+    candidates: list[tuple[int, int, int]] = []
     for page in section.pages:
         for index, block in enumerate(page.blocks):
-            if not isinstance(block, TextBlock):
+            if not isinstance(block, (TextBlock, HeaderBlock)):
                 continue
             text = _normalize(block.text)
-            if text == f"{number} {title}" or text.startswith(
-                f"{number} {title} "
+            rank: int | None = None
+            if isinstance(block, TextBlock) and text == expected:
+                rank = 3
+            elif isinstance(block, TextBlock) and text.startswith(f"{expected} "):
+                rank = 2
+            elif text == number and index + 1 < len(page.blocks):
+                next_block = page.blocks[index + 1]
+                if isinstance(next_block, TextBlock):
+                    next_text = _normalize(next_block.text)
+                    if next_text == title:
+                        rank = 3
+                    elif next_text.startswith(f"{title} "):
+                        rank = 2
+            if rank is not None:
+                candidates.append((page.pdf_page, index, rank))
+    return candidates
+
+
+def _select_title_anchor(section: SectionIR) -> tuple[int, int] | None:
+    candidates = _title_anchor_candidates(section)
+    if not candidates:
+        return None
+    best_rank = max(item[2] for item in candidates)
+    best = [item for item in candidates if item[2] == best_rank]
+    if len(best) == 1:
+        page, index, _rank = best[0]
+        return page, index
+
+    # Repeated exact anchors immediately adjacent in one page are a single
+    # layout artefact.  Distant duplicates remain ambiguous.
+    if len({page for page, _index, _rank in best}) == 1:
+        page_number = best[0][0]
+        page = next(
+            (item for item in section.pages if item.pdf_page == page_number),
+            None,
+        )
+        if page is not None:
+            indices = sorted(index for _page, index, _rank in best)
+            if all(
+                all(
+                    isinstance(block, (HeaderBlock, FooterBlock))
+                    or (isinstance(block, TextBlock) and not block.text.strip())
+                    for block in page.blocks[left + 1 : right]
+                )
+                for left, right in zip(indices, indices[1:])
             ):
-                anchors.append((page.pdf_page, index))
-                continue
-            if text != number or index + 1 >= len(page.blocks):
-                continue
-            next_block = page.blocks[index + 1]
-            if isinstance(next_block, TextBlock):
-                next_text = _normalize(next_block.text)
-                if next_text == title or next_text.startswith(f"{title} "):
-                    anchors.append((page.pdf_page, index))
-    unique = list(dict.fromkeys(anchors))
-    return unique[0] if len(unique) == 1 else None
+                return page_number, indices[0]
+    return None
+
+
+def _title_anchor(section: SectionIR) -> tuple[int, int] | None:
+    return _select_title_anchor(section)
 
 
 def _source_ref(section: SectionIR, page, block_index: int) -> BlockSourceRef:
@@ -155,6 +234,14 @@ def reconstruct_theory(sections: list[SectionIR]) -> list[TheoryIR]:
                         f"{anchor[1]} to the next Theory title anchor at "
                         f"{end[0]}:{end[1]}",
                         severity="info",
+                        source=next(
+                            (
+                                page
+                                for page in section.source_pages
+                                if page.pdf_page == anchor[0]
+                            ),
+                            None,
+                        ),
                     )
                 )
 

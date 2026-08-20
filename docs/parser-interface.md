@@ -6,7 +6,7 @@
 
 当前主链路已经贯通到 Keyword / Theory Corpus：
 
-> 给定一组具有代表性的 LS-DYNA Manual 页面，稳定生成带来源定位的 PageIR，再按 SectionMap 重建 SectionIR、KeywordIR / TheoryIR 和保守 Markdown；解析或重建存在问题时形成明确的 ParseIssue，不得静默进入下游。
+> 给定 LS-DYNA Manual 页面，稳定生成带来源定位的 PageIR，再按 SectionMap 重建 SectionIR、KeywordIR / TheoryIR 和保守 Markdown；解析或重建存在问题时形成明确的 ParseIssue，不得静默进入下游。
 
 验证路径为：
 
@@ -14,7 +14,7 @@
 PDF page → 文档解析后端 → Provider Adapter → Canonical PageIR
 ```
 
-Section Reconstruction 与 Corpus Generation 已实现首版，但仍受真实分层回归约束。复杂条件排版和若干 OCR/renderer 边界仍需通过更广泛样本持续验证。
+Section Reconstruction 与 Corpus Generation 已实现首版，并完成 R17 分层样本、独立 holdout 和四册完整构建验证。复杂条件排版和若干 OCR/renderer 边界仍需结合完整报告中的真实页面持续收敛。
 
 本文档定义的 Canonical PageIR v0.2 是当前稳定接口；它保留 v0.1 页面身份和普通表格读取能力，并增加真实 R17 页面所需的 rowspan / colspan 表达。任何后续字段扩张都必须有真实页面证据和 focused tests（见第 6 节）。
 
@@ -215,7 +215,9 @@ Provider raw JSON / JSONL / Markdown 属于 workspace provenance 与调试材料
         └── page_000197.json
 ```
 
-具体根目录由调用方根据 `output.corpus_dir` / workspace 约定传入；生产代码不依赖操作系统临时目录。signed result URL 不写入 `job.json`。
+具体根目录由调用方根据 `output.corpus_dir` / workspace 约定传入；生产代码不依赖操作系统临时目录。signed result URL 不写入 `job.json`。Provider 若使用了受限 transport recovery，必须在 `job.json.transport` 中记录 recovery 类型和 block 数量；该审计元数据不参与 PageIR 内容推断。
+
+逐页 `.md` 只用于人工调试 raw artifact：本地/远程 Provider 能提供原始 Markdown 时应原样保存；否则从结构化 `parsing_res_list` 的可见 block 内容生成确定性的调试投影。该 sidecar 不是 Canonical PageIR 输入，也不是最终 Corpus Markdown，缺失或历史空文件不得改变 JSON raw artifact、PageIR 或 cache 身份。
 
 #### 4.2.4 Cache / resume
 
@@ -245,6 +247,9 @@ Adapter identity
 ```
 
 因此修改 Adapter 后可以复用已保存的 raw artifact 重新生成 PageIR，而不会重新请求 Provider。
+`manual_page` 不属于模型语义身份；若重新 Inspection 后 PageMap 的印刷页码映射发生
+修正，Reconstruction 加载缓存 PageIR 时以当前 PageMap 为权威在内存中归一化
+`manual_page`，不重新调用 Provider，也不改写原始缓存。
 
 当前状态值：
 
@@ -295,7 +300,7 @@ Adapter 不执行 LS-DYNA-specific 结构修复。真实 Provider 输出可能�
 → 继续处理后续页面
 ```
 
-构建完成后 `reports/summary.json` 应反映失败数量。只要存在 `failed` 条目，构建结果不得报告为全部成功。
+构建完成后 `reports/summary.json` 必须分别反映条目状态与 ParsePlan 页面覆盖率。页面失败转换为带 `(document_id, pdf_page)` 来源的 `PAGE_PARSE_FAILED`，即使受影响条目仍生成了可复核 Markdown，整体构建也不得报告为全部成功。
 
 ### 4.3 Normalization / Validation
 
@@ -427,9 +432,11 @@ class ParseIssue:
     severity: str
     code: str
     message: str
+    pdf_page: int | None = None
+    manual_page: str | None = None
 ```
 
-`severity` 只允许 `info` / `warning` / `error`，与 `corpus-format.md` 中 `issues.jsonl` 的 `severity` 定义一致。
+`severity` 只允许 `info` / `warning` / `error`，与 `corpus-format.md` 中 `issues.jsonl` 的 `severity` 定义一致。页级 issue 应在首次拥有可靠页面身份时填入 `pdf_page` 和 `manual_page`；旧 artifact 或非页级问题允许省略。Reconstruction 传播 issue 时优先使用 issue 自身的页级来源，仅在缺失时回退到所属条目的首个来源页。Inspection-only issue 会进入最终报告并影响文档/整体状态，但不自动改变已成功重建条目的 manifest `status`。
 
 ### 6.6 字段约束
 
@@ -444,7 +451,7 @@ span 校验发现非法值、越界或覆盖重叠时分别记录 `PAGEIR_INVALI
 
 ## 7. ParseIssue 生命周期
 
-各阶段均可产生 issue，随 PageIR 与 SectionMap 向下游传递，最终汇入 `reports/issues.jsonl`（字段定义见 `corpus-format.md`），并影响条目 `status`。当前登记的 code：
+各阶段均可产生 issue，随 PageIR 与 SectionMap 向下游传递，最终汇入 `reports/issues.jsonl`（字段定义见 `corpus-format.md`）。除 Inspection-only 导航 issue 外，带有明确条目归属的 warning/error 会影响条目 `status`；Inspection-only issue 只影响文档/整体状态。当前登记的 code：
 
 - Pipeline / Build：`UNVERIFIED_RELEASE`、`DOCUMENT_INGEST_FAILED`；
 - Inspection：`SECTION_BOUNDARY_UNCERTAIN`、`TOC_ENTRY_UNRESOLVED`、`ANCHOR_CONFLICT`、`TOC_PAGE_TITLE_NOT_FOUND`；`MANUAL_PAGE_NOT_FOUND` 为预留 code；
@@ -456,11 +463,11 @@ span 校验发现非法值、越界或覆盖重叠时分别记录 `PAGEIR_INVALI
 
 `code` 为开放集合，新增 code 应在实现处登记语义。
 
-Inspection 的中间产物 `intermediate/<document_id>/issues.jsonl` 使用 `InspectionIssue` 序列化，并显式包含 `document_id`、`manual_type` 与可空 `volume`。最终 Corpus 报告 `reports/issues.jsonl` 的 `keyword_id` 仍遵循 `corpus-format.md`：仅真正归属于 Keyword 的问题填入 Keyword ID，否则为 `null`。
+Inspection 的中间产物 `intermediate/<document_id>/issues.jsonl` 使用 `InspectionIssue` 序列化，并显式包含 `document_id`、`manual_type` 与可空 `volume`。最终 Corpus 报告统一汇入 Inspection issue、checkpoint 页面失败、Reconstruction/PageIR issue 和文本层验证 issue。`reports/issues.jsonl` 的 `keyword_id` 仍遵循 `corpus-format.md`：仅真正归属于 Keyword 的问题填入 Keyword ID，否则为 `null`。
 
 ## 8. 分层语义回归
 
-当前语义回归使用独立的分层随机抽样 manifest，不整卷运行。对 Volume I、II、III 和 Theory 分别按短章节（1～2 页）、中章节（3～6 页）、长章节（7～40 页）抽取默认 `3/4/3` 个 SectionMap 章节，并用少量显式 anchor 补充低频结构。manifest 固定 seed、源 PDF hash、SectionMap 章节身份和候选页范围，输出到 `workspace/regression/<release>/semantic-sample/sample_manifest.json`。
+语义规则开发仍使用独立的分层随机抽样 manifest：对 Volume I、II、III 和 Theory 分别按短章节（1～2 页）、中章节（3～6 页）、长章节（7～40 页）抽取默认 `3/4/3` 个 SectionMap 章节，并用少量显式 anchor 补充低频结构。manifest 固定 seed、源 PDF hash、SectionMap 章节身份和候选页范围，输出到 `workspace/regression/<release>/semantic-sample/sample_manifest.json`。除此之外，R17 已执行四册完整 ParsePlan 和 Corpus 构建验收；抽样回归用于快速、可复现的规则验证，不能替代完整构建报告。
 
 抽样与检测命令：
 
@@ -540,6 +547,17 @@ parser:
   #   auto_prepare_runtime: false
   #   auto_start_server: true
 ```
+
+本地 llama.cpp backend 的主路径仍是 PaddleX `chat.completions`。隔离 worker 只在同一可信 server origin 的 `/v1/chat/completions` 返回结构完全匹配的 HTTP 500（`code=500`、`type=server_error`、精确的 PEG-native message）时，才对同一识别 block 启动一次 SSE token-byte recovery：
+
+1. 只接受当前 PaddleX 已确认的单个 user message：一个 `data:image/...;base64,...` 图片 part 后接一个非空 text part；远程 URL、文件路径、未知 part 或额外 message 均拒绝恢复；
+2. 从 `/props` 要求 vision capability 和非空 `media_marker`，且 marker 不得出现在原始文本中；使用原始 messages 调用 `/apply-template`，要求得到唯一非空 prompt，prompt marker 数量必须和图片数量完全一致；
+3. 用该 prompt、同一 base64 图片和等价生成参数调用流式非 OpenAI `/completion`；固定 `stream=true`、`n_cmpl=1`、`n_probs=1`、`return_tokens=true`，并逐项验证 `max_tokens -> n_predict`、`temperature=0`、`top_p`、repetition penalty、special-token、stop 和 seed；tools、response format、logprobs 或未知参数不得被静默丢弃；
+4. 不读取 SSE 的 `content` 作为来源。每个 token event 必须具有连续计数、一个 token ID、一个 completion probability、相同 ID 的 top-1 candidate，以及合法的 `completion_probabilities[0].bytes`；程序按顺序累计这些 server `text_to_send` bytes。`id_slot` 是不透明的 llama.cpp 调度元数据，允许整体缺省、`null` 或有符号整数；一旦出现，其存在性和值必须在整个 token stream 中保持一致；
+5. 只有已传输事件序列完整结束，且最后一个 SSE event 是结构完全匹配的 Content-only error（`code=500`）时，累计 bytes 才可作为该 block 的恢复输出。该条件只证明收到的 token stream 完整，不证明模型原计划的全部文本均已生成；native parser 可以在拒绝字符处提前终止。该 native stream 的 HTTP 状态仍为 200；正常 `stop`、`[DONE]`、非 SSE 响应、断流、非法 JSON、缺失/重复字段、token/probability 不一致、超出 token limit 或其他 final error 都必须保留原 PEG 页面失败；
+6. byte 序列使用 UTF-8 `errors=replace` 解码，不猜测或补写无效 byte。成功恢复次数、transport 类型、精确解码输出和 replacement-character 计数写入本地 raw job/page metadata。Adapter 对每次恢复记录 `MODEL_OUTPUT_BYTE_RECOVERY` warning；若结构化 block 或 raw 恢复输出含 Unicode replacement character，再记录 `MODEL_OUTPUT_REPLACEMENT_CHARACTER`。
+
+该路径不声称 `/completion` 绕过 llama.cpp 的最终内容解析器；相反，它只使用最终解析前已经由 server 发出的逐 token byte 证据，并以随后出现的精确 Content-only 失败作为传输终止证据。它不绕过 Paddle layout detection，也不使用 PDF 文本层补写模型结果。Paddle 后处理可能把包含拒绝字符的恢复输出投影为更短的结构化 block，因此 raw 恢复输出与 PageIR 投影必须同时可追溯，且该页面不能标记为无异常成功。后续规则不得凭上下文猜测缺失字符或补全被截断文本。
 
 配置模型使用 Pydantic `SecretStr`，Provider 的 dataclass 也禁止在 `repr` 中显示密钥。缺少 Key 时，只有 Provider 实例化失败；`inspect` 可以在 `api_key: null` 下运行。一键 `build` 若所有请求 raw 已缓存也可离线继续，否则远程模式必须提供 Key。
 

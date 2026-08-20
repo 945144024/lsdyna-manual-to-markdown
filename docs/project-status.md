@@ -21,9 +21,28 @@
 - Theory Corpus v0.1 输出合同：章节级身份、统一 manifest、父子关系、保守 block 流、共享边界和状态语义已冻结。
 - TheoryIR、Theory Markdown renderer、数字章节稳定路径、父子/兄弟 title-anchor block 所有权和 Keyword/Theory 统一 manifest 已实现。
 - `build` 已改为一键执行 `inspect -> parse -> reconstruct`，支持 raw/PageIR checkpoint 复用、配额暂停和同命令恢复。
-- 当前自动化测试共 134 个，全部通过。
+- 当前自动化测试共 250 个，全部通过。
 
 ### 当前回归状态
+
+完整 R17 一键构建验收已于 2026-08-20 完成，输入包括 Keyword Volume I-III 和 Theory Manual。验收从 `build` 入口执行 `inspect -> parse -> reconstruct`，复用合法 checkpoint；最后一个异常页面完成受审计恢复后，离线 reconstruction 刷新最终 Corpus 和报告。
+
+| 指标 | 结果 |
+| --- | ---: |
+| ParsePlan 唯一页面 | 8,186 |
+| PageIR 完成 / 失败 / 缺失 | 8,186 / 0 / 0 |
+| Corpus 条目 | 2,333 |
+| 条目 `success` / `warning` / `failed` | 2,027 / 306 / 0 |
+| 最终 issue | 4,939 |
+| issue `info` / `warning` / `error` | 4,188 / 750 / 1 |
+
+最后完成的页面为 Keyword Volume I PDF 第 3002 页（印刷页 `27-28`）。该页非空，当前 llama.cpp b10456 在一个 algorithm block 中生成单字节 `0x95`，OpenAI-compatible chat 的 PEG-native parser 因而拒绝结果。隔离 worker 只在精确匹配该 500 响应时，以 `/apply-template` 固化同一 prompt，并从 `n_probs=1` 的 SSE token bytes 接受可审计恢复。实际运行在 raw `job.json` 中记录了 `apply-template+sse-token-bytes` transport，页面 checkpoint 为 `done`。
+
+恢复没有猜写 `*KEYWORD`。native Content-only parser 可在拒绝字符处提前终止，Paddle 后处理把该 algorithm block 投影为单独的 `*`；因此程序保留结构化 PageIR，但产生 `MODEL_OUTPUT_BYTE_RECOVERY` warning，并将 `INCLUDE_COMPENSATION_SPRINGBACK_INPUT`、`INCLUDE_COMPENSATION_SYMMETRIC_LINES` 两个相关条目标为 warning。后续恢复会把精确解码输出和 replacement-character 计数同时保存到本地 raw transport metadata；任何缺失代码仍必须人工对照来源，不得由 PDF 文本层或上下文补写。
+
+另一个 error 为 Keyword Volume I PDF 第 3216 页（印刷页 `29-12`）的 `TABLE_STRUCTURE_UNCERTAIN`，归属 `INTEGRATION_BEAM`。源页中的非矩形网格位于 Figure 内，缺少将其解释为 Card 数据的可靠证据，当前保留原始来源和 error，不强制投影为矩形语义表。
+
+完整构建的 2,333 条 manifest 记录与 2,333 个 Markdown 路径一一对应，没有空文件、重复路径或 `failed` 条目；Theory 父子关系完整且无环。最终报告同时包含 3 个 Inspection `ANCHOR_CONFLICT`、2 个按条目归属展开的 `MODEL_OUTPUT_BYTE_RECOVERY`、Reconstruction/PageIR issue 和文本层验证结果。整体构建状态为 `warning`，准确反映全部页面已有 PageIR 但仍存在需复核结构，而不是由 `status_failed: 0` 推断为全部成功。
 
 当前 R17 语义回归使用固定 seed `20260817`，manifest 为：
 
@@ -109,11 +128,31 @@ workspace/regression/r17/manual-review-report-20260818-v2.md
 Card、6 个 Source Material fallback 和 17 个实际 O/0 关联。Theory 父子/兄弟边界
 和 4 个已确认的源 PDF 空白分隔页已由通用规则解决，不再列为人工边界。
 
-## 下一轮验证顺序
+## R17 Corpus release candidate
 
-1. 人工审查报告已完成，维持其中确认的保守边界策略。
-2. Theory renderer、统一 manifest 和一键 `build` 已完成 focused 与合成端到端测试。
-3. 下一阶段使用干净环境和完整 Manual 验收一键构建；该验收尚未执行，不计入当前已完成范围。
+完整结果已固化为 `docs/r17-corpus-acceptance-v0.1.json`。可选
+`quality_gate.baseline` 会在 reconstruction 后核对 release、8,186/8,186 页面覆盖、
+2,333 个条目状态、完整 issue 分布、manifest/Markdown 内容摘要、文件路径一致性以及
+3002 byte recovery、3216 Figure 网格和高影响 Card 残留证据，并生成
+`reports/acceptance.json`。
+
+剩余 566 个未匹配变量标题（208 个条目）已经按变量式标识符、说明性概念、混合/OCR
+形态、索引符号族和输入示例五层抽样。没有一层存在可由唯一 Card catalog 目标支持的
+统一新规则，因此本轮不继续以减少 warning 为目标扩展匹配。9 个缺 Variable row、
+2 个无效 slot header、28 个 continuation orphan、页面 3002 和页面 3216 的证据与
+结论见 `docs/r17-corpus-quality-review.md`。
+
+当前 R17 结果定位为可供后续索引的开发验收 Corpus：`success` 正常消费，`warning`
+正文可消费但必须携带 review/issue metadata，`failed` 不消费。具体合同见
+`docs/corpus-format.md`。
+
+## 后续工作
+
+1. 由使用方检查本次一键构建的代表性 Markdown、manifest、issues 和 acceptance 报告。
+2. 将质量门纳入发布/CI 流程，并为明确接受的基线变更执行显式 review，而不是自动
+   更新 hash 或计数。
+3. 在新的 release 或新模型输出上采集独立样本；只有出现新的唯一结构证据时再扩展
+   重建规则。
 
 ## 有意保留的范围限制
 

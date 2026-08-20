@@ -185,12 +185,19 @@ class ValidationConfig(_ConfigModel):
         return self
 
 
+class QualityGateConfig(_ConfigModel):
+    """Optional machine-comparable Corpus acceptance checks."""
+
+    baseline: Path | None = None
+
+
 class BuildConfig(_ConfigModel):
     manual: ManualConfig
     parser: ParserConfig
     output: OutputConfig
     options: OptionsConfig = OptionsConfig()
     validation: ValidationConfig = ValidationConfig()
+    quality_gate: QualityGateConfig = QualityGateConfig()
 
 
 def load_config(path: Path) -> BuildConfig:

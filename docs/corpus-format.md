@@ -46,6 +46,7 @@ corpus_root/
 │       ├── 2.5.md
 │       └── 22.3.1.md
 └── reports/
+    ├── acceptance.json       # 配置 quality gate 时生成
     ├── summary.json
     ├── issues.jsonl
     └── text_layer_comparison.json
@@ -135,9 +136,34 @@ stats:
   status_success: 1220
   status_warning: 12
   status_failed: 2
+  parse_total: 4500
+  parse_completed: 4498
+  parse_failed: 1
+  parse_missing: 1
+  issue_count: 98
+  issues_by_severity:
+    error: 1
+    info: 64
+    warning: 33
+  issues_by_code:
+    PAGE_PARSE_FAILED: 1
+    KEYWORD_BOUNDARY_RESOLVED: 64
+    VARIABLE_DESCRIPTION_UNMATCHED_TITLE: 33
+  text_layer_sample_count: 12
+  text_layer_issue_count: 0
+  text_layer_divergence_count: 0
 ```
 
 每个源 PDF 记录 `document_id`、`manual_type`、可空 `volume`、`source_file`、`pdf_page_count`、`sha256` 与 `support_level`，用于来源追溯。
+
+`status_*` 统计 manifest 条目，`parse_*` 统计本次 ParsePlan 中的唯一页面，二者不是同一维度：
+
+- `parse_total`：计划解析的唯一 `(document_id, pdf_page)` 数量；
+- `parse_completed`：存在可供 Reconstruction 使用的 PageIR 的页面数；
+- `parse_failed`：checkpoint 明确记录为 `failed` 的页面数；
+- `parse_missing`：既无可用 PageIR、也没有明确失败状态的计划页面数。
+
+`issue_count`、`issues_by_severity` 和 `issues_by_code` 是最终 `reports/issues.jsonl` 的聚合。`text_layer_*` 记录文本层抽样规模与差异数量。条目可能在某个来源页失败后仍生成可复核 Markdown，因此 `status_failed: 0` 不等价于 `parse_failed: 0`。
 
 ## 6. manifest.jsonl
 
@@ -172,13 +198,27 @@ Manifest 是 Corpus 级权威索引。每条记录只包含身份、来源、路
 - `warning`：条目生成完成，但存在需要复核的问题，只要生成可供人工复核的 Markdown，`markdown_path` 应存在；
 - `failed`：无法生成可靠 Markdown，`markdown_path` 为 `null`。
 
+Manifest 条目的 `status` 反映该条目的 SectionIR/KeywordIR/TheoryIR 重建结果。
+Inspection-only issue（例如 `ANCHOR_CONFLICT`）仍会进入最终 `reports/issues.jsonl`
+并使文档或整体构建进入 `warning`，但不会仅因导航证据冲突而把已经成功重建的条目降级；
+应按 issue 中的 `document_id`、`section_id`、`keyword_id` 和页码定位复核。
+
 `keyword_id` 不使用 legacy 编号。legacy 编号保存在 `legacy_ids` 字段中，不单独建立映射文件。
 
 ## 7. reports
 
 每次构建生成一套报告，不按 Volume 分拆。
 
-`summary.json` 记录成功、警告与失败条目数量，并包含文本层抽样的配置值、实际样本数、总 issue 数和 `TEXT_LAYER_DIVERGENCE` 数量。公式表示差异记录为独立的 `TEXT_LAYER_FORMULA_REPRESENTATION_DIVERGENCE` warning。只要存在 `failed` 条目或文本层抽样产生 warning/error，构建结果不得报告为全部成功。
+`summary.json` 顶层包含 `status`、release、文档列表以及与 `corpus.yaml.stats` 相同的条目、解析覆盖率、issue 和文本层统计。每个文档记录自己的 `status`、`parse_total`、`parse_completed`、`parse_failed` 和 `parse_missing`，用于定位不完整覆盖。公式表示差异记录为独立的 `TEXT_LAYER_FORMULA_REPRESENTATION_DIVERGENCE` warning。
+
+最终 issue 集合汇总以下来源，不要求调用方再拼接中间报告：
+
+- Inspection 的 `intermediate/<document_id>/issues.jsonl`；
+- parse checkpoint 中的页面失败，转换为 `PAGE_PARSE_FAILED`；
+- Reconstruction 与 PageIR 传播的问题；
+- PDF 文本层验证问题。
+
+存在无法生成的 manifest 条目或文档 ingest 失败时，整体 `status` 为 `failed`；存在 warning 条目、解析失败/缺页、best-effort 文档或任意 warning/error issue 时为 `warning`；其余情况才为 `success`。Inspection-only issue 不改变已成功重建条目的 manifest 状态，但仍参与整体状态判定。因此整体状态、manifest 条目状态和页面解析覆盖率必须一起判读。
 
 `text_layer_comparison.json` 保存每个文档的抽样页、PageIR 与 PDF 文本层 token 计数、重叠数、双向 recall、非公式正文 token/recall、缺失 token 和相关 issue。它是验证报告，不是正文来源；任何 divergence 都不能静默覆盖 PageIR。
 
@@ -192,6 +232,7 @@ Manifest 是 Corpus 级权威索引。每条记录只包含身份、来源、路
   "pdf_page": 245,
   "manual_page": "2-131",
   "keyword_id": "MAT_EXAMPLE",
+  "section_id": "MAT_EXAMPLE",
   "severity": "warning",
   "code": "TABLE_STRUCTURE_UNCERTAIN",
   "message": "…"
@@ -217,8 +258,28 @@ Manifest 是 Corpus 级权威索引。每条记录只包含身份、来源、路
   "pdf_page": 245,
   "manual_page": "2-131",
   "keyword_id": null,
+  "section_id": null,
   "severity": "error",
   "code": "PAGE_PARSE_FAILED",
   "message": "…"
 }
 ```
+
+## 8. 下游索引策略
+
+Corpus 是当前流水线的最终产物。下游索引器应以 `manifest.jsonl` 枚举条目，并按
+以下合同消费：
+
+- `success`：索引 `markdown_path` 指向的完整 Markdown，同时保存 identity、
+  `source_pages` 和 manifest 状态；
+- `warning`：仍可索引完整 Markdown，但必须保存 `review_required: true`，并按
+  `document_id`、`keyword_id`/`section_id` 和来源页关联 `reports/issues.jsonl`；
+- `failed`：不索引正文；当前合同要求其 `markdown_path` 为 `null`；
+- 对 `warning` 条目，正文可用于检索和人工阅读，但 issue 所指的 Card slot、变量归属、
+  边界或表格投影不得被下游提升为不带不确定性标记的权威结构化字段；
+- `info` issue 保留审计证据，不要求把条目视为待审查；整体构建状态仍可能因其他
+  文档级 warning/error 为 `warning`。
+
+配置 `quality_gate.baseline` 时，重建还会写出 `reports/acceptance.json`。索引发布任务
+应要求其中 `status == "passed"`；该报告验证基线统计、manifest、Markdown 内容摘要、
+文件非空/路径一致性和配置的关键 evidence。未配置质量门的普通构建不生成该报告。

@@ -233,6 +233,8 @@ def compare_text_layer_samples(
                         f"pdftotext returned {len(text_pages)} pages; "
                         f"PDF page {pdf_page} is unavailable"
                     ),
+                    pdf_page=pdf_page,
+                    manual_page=page_ir.manual_page,
                 )
             )
             continue

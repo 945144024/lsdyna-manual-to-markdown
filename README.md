@@ -10,7 +10,7 @@
 - R14、R15、R16、R17 Theory Manual；
 - 同一 release 下任意非空组合，包括单册、部分 Keyword 卷、Keyword + Theory 和 Theory-only。
 
-这项版本承诺目前只覆盖确定性 Inspection；PaddleOCR、PageIR 和最终 Markdown 已通过 R17 固定分层样本与独立 holdout 验证，但不能据此推导所有上述版本的语义重建都已逐条复核。其他 release 允许运行，并标记为 `best-effort`，但不保证 PageMap、SectionMap 或后续解析结果。页面使用 `(document_id, pdf_page)` 作为稳定身份，`document_id` 为 `keyword-volume-1`、`keyword-volume-2`、`keyword-volume-3` 或 `theory`。
+这项版本承诺对 R12-R16 只覆盖确定性 Inspection；R17 还完成了固定分层样本、独立 holdout 以及四册完整一键构建验收。完整 R17 验收生成了 2,333 个 Keyword/Theory 条目，其中 2,027 个为 `success`、306 个为 `warning`、0 个为 `failed`；8,186 个计划页面均已生成 PageIR。该结果证明完整流水线可以运行和恢复，不代表全部语义条目已经人工逐项核准。其他 release 允许运行，并标记为 `best-effort`，但不保证 PageMap、SectionMap 或后续解析结果。页面使用 `(document_id, pdf_page)` 作为稳定身份，`document_id` 为 `keyword-volume-1`、`keyword-volume-2`、`keyword-volume-3` 或 `theory`。
 
 ## 当前能力
 
@@ -25,6 +25,7 @@
 - `lsdyna-manual reconstruct` 将现有 PageIR 聚合为 SectionIR，再生成 KeywordIR/TheoryIR，并输出可追溯的 Keyword/Theory Markdown、统一 manifest 与质量报告；未知 Keyword 结构会保留为 Source Material；
 - Theory Corpus v0.1 合同、数字层级、title-anchor block 所有权、Markdown renderer 和统一 manifest 接入均已实现，并通过 R17 固定样本和 holdout 验证；
 - `lsdyna-manual build` 是一键入口，依次执行 `inspect -> parse -> reconstruct`；解析阶段沿用 raw/PageIR checkpoint，配额暂停后可用相同命令恢复；
+- `corpus.yaml` 和 `reports/summary.json` 同时报告条目状态、页面解析覆盖率和 issue 聚合；`reports/issues.jsonl` 汇总 Inspection、Parsing、Reconstruction/PageIR 与文本层验证问题，并保留页级来源；
 - KeywordIR 已识别 Description、Purpose、Option、Card、变量说明区域、Remarks 和 References；Card 表支持 summary / definition、合并行、点号子卡、固定槽位和 summary 缺槽补充；Variable Description 支持表格行、跨块文本、值表、续表、显式列表和变量族归属。renderer 会保守处理 O/0 歧义、字面单元格换行和精确重复片段；文本层验证同时报告 raw visual recall 与非公式正文 recall。
 
 ```text
@@ -123,6 +124,8 @@ parser:
     max_concurrency: 1
 ```
 
+本地 worker 默认使用 PaddleX 的 OpenAI-compatible chat 路径。仅当配置的 `llama-server` 返回已知且结构完全匹配的 PEG-native 解析错误时，worker 才会对同一个识别 block 启动一次受限恢复：使用原始消息调用 `/apply-template`，校验 vision capability、图片 marker 和确定性生成参数，再从流式 `/completion` 的逐 token byte 证据重建输出。恢复必须收到连续且相互一致的 token 事件，并以已知 Content-only 解析错误终止；正常结束、断流、字段不符或任何其他错误都会保留原页面失败。程序不信任流中的文本投影，也不修正 OCR 字符。由于 native parser 可能在拒绝字符处提前终止，任何成功使用该路径的页面都会生成 `MODEL_OUTPUT_BYTE_RECOVERY` warning；解码输出保存在本地 raw transport metadata 中，无效 UTF-8 byte 使用 `U+FFFD`（`�`）保留。
+
 若希望程序安装缺失的 PaddleOCR Python 依赖并下载已配置的运行时产物，将 `auto_prepare_runtime` 设为 `true`，且首次执行：
 
 ```bash
@@ -205,7 +208,7 @@ PaddleOCR 返回配额耗尽时，`parse` 停止提交后续批次、保留 chec
 
 `reconstruct` 要求已经存在 inspection 与 PageIR 产物。它严格保留 SectionMap 的候选页范围，缺页、空页或相邻章节共享边界页时不猜测内容归属，而是生成 `warning` / `failed` 状态和对应 issue。Keyword 正文做确定性语义结构化；Theory 按数字章节与唯一 title anchor 切分 block 所有权。两类记录写入同一个 `manifest.jsonl`，Theory 文件位于 `markdown/theory/`。默认还会对每个文档的首/中/尾 PageIR 与 PDF 文本层做抽样 token 比对；报告只用于验证，不覆盖 PageIR。产物为 `corpus.yaml`、`manifest.jsonl`、`markdown/` 和 `reports/`。
 
-`reconstruct` 的退出状态反映质量：存在无法生成的 Keyword 时失败；只有 warning 或文本层 divergence 时返回 warning。用户应先查看 `reports/summary.json` 和 `reports/issues.jsonl`，再将生成的 Markdown 作为下游数据使用。
+`reconstruct` 的退出状态反映整体质量：存在无法生成的条目或文档 ingest 失败时返回 failed；存在 warning 条目、解析失败/缺页或 warning/error issue 时返回 warning。条目状态和页面覆盖率是独立信号，因此 `status_failed: 0` 不表示所有计划页面都已成功解析。用户应先查看 `reports/summary.json` 中的 `parse_*`、`status_*` 和 issue 汇总，再按 `reports/issues.jsonl` 定位问题，然后将生成的 Markdown 作为下游数据使用。
 
 `sample-regression` 从 Volume I、II、III 和 Theory 各自的 SectionMap 中按短章节（1～2 页）、中章节（3～6 页）、长章节（7～40 页）分层抽取，默认每个文档为 `3/4/3` 个样本。固定 `--seed` 会得到相同选择；`--anchor` 只追加已知边界结构，不改变随机层的选择。命令不会调用 OCR Provider，只扫描 PDF 文本层、读取已有 PageIR 并生成抽样 Markdown。输出 `sample_manifest.json` 保存章节身份、页范围、源 PDF hash、seed、选择理由和结构候选标记；`sample_detection.json` 保存 PageIR 覆盖率、Markdown 质量探针、文本层 recall 与 issue 分布。`not_parsed` 表示样本尚未经过 Provider，不等同于解析失败。
 
@@ -219,10 +222,18 @@ lsdyna-manual parse configs/local.yaml \
 
 `build` 是面向用户的完整入口。它首先重新生成确定性的 inspection 导航产物，然后执行可续跑解析，最后生成完整 Corpus。若 Provider 报告配额耗尽，命令以退出码 `3` 暂停且不提前运行 reconstruction；恢复配额后重新执行同一命令即可。有效 raw/PageIR 会通过源文件、provider/model、adapter 和 schema 身份校验后复用。
 
+发布或回归配置可选填 `quality_gate.baseline`。它在 reconstruction 后严格比较已审阅
+基线的页面覆盖、条目/issue 分布、manifest 和全部 Markdown 内容摘要，并写出
+`reports/acceptance.json`；不匹配时构建返回 failed。普通首次构建无需配置质量门，
+因为基线只适用于创建它时使用的同一 release 和同一组 Manual 文件。R17 开发验收
+基线见 `docs/r17-corpus-acceptance-v0.1.json`。
+
 ## 当前局限
 
-- R12-R17 的版本验证覆盖确定性 Inspection；语义重建目前重点验证了 R17 固定样本与独立 holdout，尚未逐条验证所有版本的完整 Corpus；
+- R12-R16 的版本验证覆盖确定性 Inspection；R17 已完成完整 Corpus 构建验收，但生成条目仍未全部经过人工语义复核；
 - OCR 或视觉模型可能产生识别偏差、空结果和结构歧义。程序会重试、保留来源并输出 warning / failed 报告，但不保证任意输入都无需复核；
+- 完整 R17 验收已生成全部 8,186 个 PageIR；其中 1 页使用受审计的 token-byte 恢复，相关条目保持 warning，缺失字符和被截断的模型文本不会按上下文补写；
+- R17 报告仍保留 1 个 `TABLE_STRUCTURE_UNCERTAIN` error：对应 Figure 内的非矩形网格，程序不将其强制解释为 Card 表；
 - 证据不足的共享边界、变量归属和非等价 Card 不会被猜测合并，可能在最终 Markdown 中保守双保留或进入 Source Material；
 - 本地 Provider 当前只验证了单页、单并发；运行时准备不安装 NVIDIA 驱动、CUDA/WSL，也不自动选择 `llama-server` 二进制来源；
 - 其他 release 可以 `best-effort` 运行，但不属于已验证版本范围。

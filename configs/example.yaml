@@ -75,3 +75,9 @@ validation:
   text_layer_sample_pages: 3
   text_layer_min_tokens: 8
   text_layer_min_visual_recall: 0.65
+
+# Optional release-candidate gate. A baseline freezes exact Corpus counts,
+# issue inventory, manifest and Markdown digests. Leave it unset for normal
+# builds; only use a baseline created for the same Manual files and release.
+# quality_gate:
+#   baseline: "./docs/r17-corpus-acceptance-v0.1.json"

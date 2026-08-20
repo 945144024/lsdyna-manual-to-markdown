@@ -56,6 +56,45 @@ def test_page_ir_roundtrip():
     assert restored.to_dict()["schema_version"] == "0.2"
 
 
+def test_parse_issue_page_provenance_is_optional_and_roundtrips():
+    unsourced = ParseIssue(severity="warning", code="OLD", message="legacy")
+    assert unsourced.to_dict() == {
+        "severity": "warning",
+        "code": "OLD",
+        "message": "legacy",
+    }
+
+    payload = _page_ir().to_dict()
+    payload["issues"] = [
+        {
+            "severity": "warning",
+            "code": "PAGE_WARNING",
+            "message": "inspect page",
+            "pdf_page": 197,
+            "manual_page": "2-131",
+        }
+    ]
+    restored = PageIR.from_dict(payload)
+
+    assert restored.issues[0].pdf_page == 197
+    assert restored.issues[0].manual_page == "2-131"
+    assert restored.to_dict()["issues"] == payload["issues"]
+
+
+def test_parse_issue_page_source_only_fills_missing_provenance():
+    issue = ParseIssue(
+        severity="warning",
+        code="EXPLICIT",
+        message="already sourced",
+        pdf_page=9,
+    )
+
+    sourced = issue.with_page_source(pdf_page=10, manual_page="2-10")
+
+    assert sourced.pdf_page == 9
+    assert sourced.manual_page is None
+
+
 def test_block_from_dict_rejects_unknown_type():
     with pytest.raises(ValueError, match="unknown PageIR block type"):
         block_from_dict({"type": "mystery"})

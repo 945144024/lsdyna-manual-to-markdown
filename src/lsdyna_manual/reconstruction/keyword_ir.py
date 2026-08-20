@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -209,6 +210,11 @@ class KeywordIR:
     references_blocks: list[SourcedBlock] = field(default_factory=list)
     card_table_blocks: list[SourcedBlock] = field(default_factory=list)
     variable_catalog: list[str] = field(default_factory=list)
+    _catalog_hints: list[str] = field(default_factory=list, repr=False)
+    _catalog_hint_fields: list[CardFieldIR] = field(default_factory=list, repr=False)
+    _catalog_alias_targets: dict[str, list[str]] = field(
+        default_factory=dict, repr=False
+    )
     unclassified_blocks: list[SourcedBlock] = field(default_factory=list)
     ignored_blocks: list[SourcedBlock] = field(default_factory=list)
     issues: list[ParseIssue] = field(default_factory=list)
@@ -351,11 +357,30 @@ class KeywordIR:
         }
 
 
-def _issue(code: str, message: str, *, severity: str = "warning") -> ParseIssue:
-    return ParseIssue(severity=severity, code=code, message=message)
+def _issue(
+    code: str,
+    message: str,
+    *,
+    severity: str = "warning",
+    source: BlockSourceRef | SectionSourcePage | None = None,
+) -> ParseIssue:
+    return ParseIssue(
+        severity=severity,
+        code=code,
+        message=message,
+        pdf_page=source.pdf_page if source is not None else None,
+        manual_page=source.manual_page if source is not None else None,
+    )
 
 
-def _normalized_title_line(text: str) -> str | None:
+def _keyword_title_line_surface(text: str) -> str | None:
+    """Strip only known display wrappers from a one-line Keyword title.
+
+    Delimiters that may be part of a real keyword name are intentionally
+    retained. The later canonicalization only treats spaces, underscores,
+    and documented hyphen variants as interchangeable separators.
+    """
+
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if len(lines) != 1:
         return None
@@ -363,27 +388,130 @@ def _normalized_title_line(text: str) -> str | None:
     line = line.strip("`").strip()
     if line.startswith("**") and line.endswith("**") and len(line) > 4:
         line = line[2:-2].strip()
-    line = line.replace("^{*}", "*").replace("{*}", "*")
-    line = line.replace("\\_", "_").replace("$", "").replace("^", "")
-    line = line.replace("{", "").replace("}", "")
-    return re.sub(r"\s+", "", line).upper()
+
+    line = unicodedata.normalize("NFKD", line)
+    line = line.replace("‑", "-").replace("–", "-").replace("—", "-")
+    line = line.replace("\\_", "_").replace("\\{", "{").replace("\\}", "}")
+
+    # Paddle commonly renders a literal keyword asterisk as a small LaTeX
+    # fragment. Remove that exact fragment, but leave other math punctuation
+    # untouched so malformed or unrelated text cannot become an anchor.
+    had_math_star = bool(
+        re.search(r"\$\s*\^\s*\{\s*\*\s*\}\s*\$", line)
+    )
+    line = re.sub(r"\$\s*\^\s*\{\s*\*\s*\}\s*\$", "*", line)
+    line = re.sub(r"\$\s*\{\s*\*\s*\}\s*\$", "*", line)
+    line = re.sub(r"\^\s*\{\s*\*\s*\}", "*", line)
+
+    # Keep the contents of a small, explicit set of text/math wrappers.
+    line = re.sub(
+        r"\\(?:mathrm|text|textrm|rm|bf|mathbf|mathit|it)\s*\{([^{}]*)\}",
+        r"\1",
+        line,
+        flags=re.IGNORECASE,
+    )
+    stripped = line.strip()
+    if (
+        stripped.count("$") == 2
+        and stripped.startswith("$")
+        and stripped.endswith("$")
+    ):
+        line = stripped[1:-1].strip()
+    elif had_math_star:
+        # Some OCR variants leave the closing math delimiter after the
+        # identifier even though the opening delimiter was consumed with the
+        # asterisk fragment.
+        line = re.sub(r"\s*\$\s*$", "", line)
+
+    return re.sub(r"\s+", " ", line).strip() or None
 
 
-def _is_strong_keyword_title(text: str, expected_name: str) -> bool:
+def _normalized_title_line(text: str) -> str | None:
+    """Return a conservative canonical key for a one-line Keyword title."""
+
+    line = _keyword_title_line_surface(text)
+    if line is None:
+        return None
+    line = re.sub(r"^\s*\*+\s*", "", line)
+    # Spaces, underscores, and ASCII/typographic hyphens are the only
+    # presentation separators treated as equivalent. Other punctuation is
+    # retained and therefore cannot silently collapse distinct identifiers.
+    line = re.sub(r"[ _-]+", "_", line)
+    return line.upper() or None
+
+
+def _keyword_title_match_rank(text: str, expected_name: str) -> int | None:
+    """Return 2 for an exact title, 1 for an option-placeholder title."""
+
     candidate = _normalized_title_line(text)
     expected = _normalized_title_line(expected_name)
     if candidate is None or expected is None:
+        return None
+    if candidate == expected:
+        return 2
+    if not candidate.startswith(f"{expected}_"):
+        return None
+    suffix = candidate[len(expected) + 1 :]
+    tokens = [token for token in suffix.split("_") if token]
+    option_token = r"(?:OPTIONS?(?:[0-9]+)?|\{OPTIONS?(?:[0-9]+)?\})"
+    if tokens and all(re.fullmatch(option_token, token) for token in tokens):
+        return 1
+    return None
+
+
+def _keyword_title_option_suffix_re() -> re.Pattern[str]:
+    option = r"(?:OPTIONS?(?:[0-9]+)?|\{OPTIONS?(?:[0-9]+)?\})"
+    return re.compile(rf"(?:[\s_-]+){option}(?:[\s_-]+{option})*\s*$", re.I)
+
+
+def _keyword_title_requires_header(text: str, expected_name: str) -> bool:
+    """Return whether a normalized anchor needs independent header evidence."""
+
+    rank = _keyword_title_match_rank(text, expected_name)
+    if rank is None:
         return False
-    accepted = {
-        expected,
-        f"{expected}_OPTION",
-        f"{expected}_OPTIONS",
-        f"{expected}_{{OPTION}}",
-        f"{expected}_{{OPTIONS}}",
-        f"{expected}_(OPTION)",
-        f"{expected}_(OPTIONS)",
-    }
-    return candidate in accepted
+    candidate = _keyword_title_line_surface(text)
+    expected = _keyword_title_line_surface(expected_name)
+    if candidate is None or expected is None:
+        return False
+    if expected.lstrip().startswith("*") and not candidate.lstrip().startswith("*"):
+        return True
+
+    candidate_base = candidate
+    if rank == 1:
+        candidate_base = _keyword_title_option_suffix_re().sub("", candidate_base)
+
+    def presentation_surface(value: str) -> str:
+        value = value.strip().casefold()
+        return re.sub(r"^\*+\s*", "*", value)
+
+    # The canonical key may equate spaces, underscores, and hyphens, but that
+    # equivalence is still an OCR-dependent inference. Require an independent
+    # page header whenever the source surface is not already identical.
+    return presentation_surface(candidate_base) != presentation_surface(expected)
+
+
+def _keyword_header_confirms_title(page, expected_name: str) -> bool:
+    """Return whether a HeaderBlock independently names the same Keyword.
+
+    The layout detector may omit the literal keyword asterisk from a header,
+    so the normalized exact title is the evidence we require here. A header
+    with only a family name or an appended running-header suffix does not
+    qualify because ``_keyword_title_match_rank`` will not return an exact
+    match for it.
+    """
+
+    for block in page.blocks:
+        if not isinstance(block, HeaderBlock):
+            continue
+        if _keyword_title_match_rank(block.text, expected_name) != 2:
+            continue
+        return True
+    return False
+
+
+def _is_strong_keyword_title(text: str, expected_name: str) -> bool:
+    return _keyword_title_match_rank(text, expected_name) is not None
 
 
 def _text_of(block: Block) -> str:
@@ -406,7 +534,7 @@ def _is_exact_label(text: str, label: str) -> bool:
 
 def _card_label_from_text(text: str) -> str | None:
     match = re.match(
-        r"^Card\s+([0-9]+[A-Za-z]?(?:\.[0-9]+)?)(?:\s*[.:]|\s*$)",
+        r"^Card\s+([0-9]+[A-Za-z]?(?:\.[0-9]+[A-Za-z]?)*)(?:\s*[.:]|\s*$)",
         text.strip(),
         re.IGNORECASE,
     )
@@ -462,16 +590,56 @@ def _table_first_row_text(block: TableBlock) -> list[str]:
     return [cell.text.strip() for cell in rows[0]]
 
 
-def _card_regions(block: TableBlock) -> list[tuple[str, int, int]]:
+def _effective_slot_count(
+    rows: list[list[Cell]], row_start: int, row_end: int
+) -> int:
+    """Return the last non-empty slot column in one Card region."""
+
+    width = max((len(row) for row in rows[row_start:row_end]), default=0)
+    for column in range(width - 1, 0, -1):
+        if any(_cell_text(row, column) is not None for row in rows[row_start:row_end]):
+            return column
+    return 0
+
+
+def _sequential_card_slot_count(
+    rows: list[list[Cell]], row_start: int, row_end: int
+) -> int | None:
+    slot_count = _effective_slot_count(rows, row_start, row_end)
+    if slot_count == 0:
+        return None
+    header_slots = [
+        _cell_text(rows[row_start], column)
+        for column in range(1, slot_count + 1)
+    ]
+    if header_slots != [str(slot) for slot in range(1, slot_count + 1)]:
+        return None
+    return slot_count
+
+
+def _card_regions(
+    block: TableBlock, *, allow_structural_labels: bool = False
+) -> list[tuple[str, int, int]]:
     """Return Card row regions, preserving all rows in the source table."""
 
     rows = table_grid_rows(block)
-    starts: list[tuple[str, int]] = []
+    if rows and len(rows[0]) >= 2:
+        first_pair = [
+            _normalized_row_label(rows[0][column].text)
+            for column in range(2)
+        ]
+        if first_pair == ["card", "description"]:
+            # This is a prose Card-summary table, not a fixed-slot Card
+            # definition.  Preserve it as source material without inventing
+            # slot or Variable semantics.
+            return []
+
+    starts: list[tuple[str, int, bool]] = []
     for row_index, row in enumerate(rows):
         if not row:
             continue
         match = re.fullmatch(
-            r"Cards?(?:\s+([0-9]+[A-Za-z]?(?:\.[0-9]+)?))?\s*:?",
+            r"Cards?(?:\s+([0-9]+[A-Za-z]?(?:\.[0-9]+[A-Za-z]?)*))?\s*:?",
             row[0].text.strip(),
             re.IGNORECASE,
         )
@@ -480,16 +648,33 @@ def _card_regions(block: TableBlock) -> list[tuple[str, int, int]]:
                 (
                     f"Card {match.group(1)}" if match.group(1) else "Card",
                     row_index,
+                    False,
                 )
             )
-    return [
-        (
-            label,
-            start,
-            starts[index + 1][1] if index + 1 < len(starts) else len(rows),
-        )
-        for index, (label, start) in enumerate(starts)
-    ]
+            continue
+        if (
+            allow_structural_labels
+            and row[0].text.strip()
+            and _sequential_card_slot_count(rows, row_index, row_index + 1)
+            is not None
+        ):
+            starts.append((row[0].text.strip(), row_index, True))
+
+    starts.sort(key=lambda item: item[1])
+    regions: list[tuple[str, int, int]] = []
+    for index, (label, start, structural) in enumerate(starts):
+        end = starts[index + 1][1] if index + 1 < len(starts) else len(rows)
+        if structural:
+            variable_rows = _row_indices_by_label(
+                block,
+                start + 1,
+                end,
+                {"Variable", "Variable Type", "Variable Type Default"},
+            )
+            if len(variable_rows) != 1:
+                continue
+        regions.append((label, start, end))
+    return regions
 
 
 def _cell_text(row: list[Cell], column: int) -> str | None:
@@ -524,6 +709,28 @@ def _looks_like_field_type(text: str) -> bool:
     return bool(re.fullmatch(r"[A-Z](?:\s*/\s*[A-Z])?", text.strip().upper()))
 
 
+def _split_variable_type_default_cell(
+    text: str,
+) -> tuple[str, str, str] | None:
+    """Parse one strict ``identifier + type + default`` compressed cell."""
+
+    lines = _logical_cell_lines(text)
+    if len(lines) == 1:
+        parts = lines[0].split(maxsplit=2)
+    else:
+        parts = lines
+    if len(parts) != 3:
+        return None
+    variable, field_type, default = (part.strip() for part in parts)
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", variable):
+        return None
+    if not re.fullmatch(r"[A-Z](?:\d+(?:\.\d+)?)?", field_type.upper()):
+        return None
+    if not default:
+        return None
+    return variable, field_type, default
+
+
 def _compressed_row_value(row: list[Cell], slot: int) -> str | None:
     return _cell_text(row, slot - 1)
 
@@ -555,35 +762,51 @@ def _definition_fields(
     if not isinstance(block, TableBlock) or row_start >= row_end:
         return []
     rows = table_grid_rows(block)
+    semantic_end = next(
+        (
+            row_index
+            for row_index in range(row_start + 1, row_end)
+            if _is_variable_description_header_row(rows[row_index])
+        ),
+        row_end,
+    )
     header = rows[row_start]
-    slot_count = max(0, len(header) - 1)
+    slot_count = _effective_slot_count(rows, row_start, semantic_end)
     if slot_count == 0:
         issues.append(
             _issue(
                 "CARD_DEFINITION_SLOT_HEADER_INVALID",
                 f"definition table at page {sourced.source.pdf_page} has no "
                 "Card slot header",
+                source=sourced.source,
             )
         )
         return []
-    header_slots = [_cell_text(header, column) for column in range(1, len(header))]
+    header_slots = [
+        _cell_text(header, column) for column in range(1, slot_count + 1)
+    ]
     if header_slots != [str(slot) for slot in range(1, slot_count + 1)]:
         issues.append(
             _issue(
                 "CARD_DEFINITION_SLOT_HEADER_INVALID",
                 f"definition table at page {sourced.source.pdf_page} has a "
                 f"non-sequential Card slot header: {header_slots!r}",
+                source=sourced.source,
             )
         )
 
     variable_rows = _row_indices_by_label(
         block,
         row_start + 1,
-        row_end,
+        semantic_end,
         {"Variable", "Variable Type", "Variable Type Default"},
     )
-    type_rows = _row_indices_by_label(block, row_start + 1, row_end, {"Type"})
-    default_rows = _row_indices_by_label(block, row_start + 1, row_end, {"Default"})
+    type_rows = _row_indices_by_label(
+        block, row_start + 1, semantic_end, {"Type"}
+    )
+    default_rows = _row_indices_by_label(
+        block, row_start + 1, semantic_end, {"Default"}
+    )
     ambiguous = {
         "Variable": variable_rows,
         "Type": type_rows,
@@ -596,6 +819,7 @@ def _definition_fields(
                 "CARD_DEFINITION_ROW_AMBIGUOUS",
                 f"definition table at page {sourced.source.pdf_page} contains "
                 f"multiple {'/'.join(duplicates)} rows; the first is retained",
+                source=sourced.source,
             )
         )
     variable_row = variable_rows[0] if variable_rows else None
@@ -607,17 +831,30 @@ def _definition_fields(
                 "CARD_DEFINITION_VARIABLE_ROW_MISSING",
                 f"definition table at page {sourced.source.pdf_page} has no "
                 "Variable row",
+                source=sourced.source,
             )
         )
 
     combined_labels: set[str] = set()
     split_variables: dict[int, str] = {}
     split_types: dict[int, str] = {}
+    split_defaults: dict[int, str] = {}
     if variable_row is not None:
         combined_labels = set(_normalized_row_label(rows[variable_row][0].text).split())
         for slot in range(1, slot_count + 1):
             raw = _cell_text(rows[variable_row], slot)
             if raw is None:
+                continue
+            compressed_triplet = (
+                _split_variable_type_default_cell(raw)
+                if combined_labels == {"variable", "type", "default"}
+                else None
+            )
+            if compressed_triplet is not None:
+                variable, field_type, default = compressed_triplet
+                split_variables[slot] = variable
+                split_types[slot] = field_type
+                split_defaults[slot] = default
                 continue
             parts = _logical_cell_lines(raw)
             if len(parts) == 2 and _looks_like_field_type(parts[1]):
@@ -644,7 +881,7 @@ def _definition_fields(
         type_row is None
         and "type" in combined_labels
         and candidate_row is not None
-        and candidate_row < row_end
+        and candidate_row < semantic_end
         and len(rows[candidate_row]) <= slot_count
         and all(
             not cell.text.strip() or _looks_like_field_type(cell.text)
@@ -657,7 +894,7 @@ def _definition_fields(
         default_row is None
         and "default" in combined_labels
         and candidate_row is not None
-        and candidate_row < row_end
+        and candidate_row < semantic_end
         and len(rows[candidate_row]) <= slot_count
     ):
         compressed_default_row = candidate_row
@@ -681,6 +918,8 @@ def _definition_fields(
             if default_row is not None
             else None
         )
+        if default is None:
+            default = split_defaults.get(slot)
         if default is None and compressed_default_row is not None:
             default = _compressed_row_value(
                 rows[compressed_default_row], slot
@@ -743,6 +982,7 @@ def _merge_card_continuation_fields(
                 "CARD_DEFINITION_CONTINUATION_ORPHAN",
                 f"Card continuation table at page {sourced.source.pdf_page} has "
                 "no preceding field slots",
+                source=sourced.source,
             )
         )
         return
@@ -818,11 +1058,20 @@ def _append_card_table(
     )
 
 
-def _is_variable_description_table(block: TableBlock) -> bool:
-    first_row = [
-        _normalized_row_label(value) for value in _table_first_row_text(block)
+def _is_variable_description_header_row(row: list[Cell]) -> bool:
+    labels = [
+        _normalized_row_label(cell.text) for cell in row if cell.text.strip()
     ]
-    return len(first_row) >= 2 and first_row[:2] == ["variable", "description"]
+    return (
+        len(labels) == 2
+        and labels[0] in {"variable", "ariable"}
+        and labels[1] == "description"
+    )
+
+
+def _is_variable_description_table(block: TableBlock) -> bool:
+    rows = table_grid_rows(block)
+    return bool(rows and _is_variable_description_header_row(rows[0]))
 
 
 def _option_token(text: str) -> str | None:
@@ -955,11 +1204,118 @@ def _merge_summary_fields(card: CardIR) -> None:
                 )
 
 
-def _variable_lookup(keyword: KeywordIR) -> dict[str, str]:
-    return {
-        _normalized_variable_name(variable): variable
-        for variable in keyword.variable_catalog
+class _VariableLookup(dict[str, str]):
+    """Catalog lookup with a set of exact-only Card-field aliases."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.exact_only_keys: set[str] = set()
+
+
+_CARD_FIELD_ALIAS_RE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_]*(?:\s*(?:/|\bor\b)\s*"
+    r"[A-Za-z][A-Za-z0-9_]*)+$",
+    re.IGNORECASE,
+)
+
+
+def _card_field_alias_tokens(text: str) -> list[str]:
+    """Return exact identifier aliases from one Card field cell.
+
+    Only slash-separated or standalone ``or`` alternatives are accepted.  A
+    malformed cell remains a single source variable and never contributes an
+    alias.
+    """
+
+    value = text.strip()
+    if not _CARD_FIELD_ALIAS_RE.fullmatch(value):
+        return []
+    tokens = [
+        token.strip()
+        for token in re.split(r"\s*(?:/|\bor\b)\s*", value, flags=re.IGNORECASE)
+        if token.strip()
+    ]
+    if len(tokens) < 2:
+        return []
+    return tokens
+
+
+def _variable_lookup(keyword: KeywordIR) -> _VariableLookup:
+    lookup = _VariableLookup()
+    keyword._catalog_alias_targets = {}
+    for variable in keyword.variable_catalog:
+        normalized = _normalized_variable_name(variable)
+        if not normalized:
+            continue
+        lookup.setdefault(normalized, variable)
+
+    ambiguous_pages = {
+        issue.pdf_page
+        for issue in keyword.issues
+        if issue.code == "KEYWORD_BOUNDARY_AMBIGUOUS"
+        and issue.pdf_page is not None
     }
+    fields_by_source: dict[
+        tuple[str, int, int, int | None, int | None], CardFieldIR
+    ] = {}
+    for card_field in [
+        *keyword._catalog_hint_fields,
+        *(field for card in keyword.cards for field in card.fields),
+    ]:
+        if (
+            card_field.variable is None
+            or card_field.source.pdf_page in ambiguous_pages
+        ):
+            continue
+        source_key = (
+            card_field.source.document_id,
+            card_field.source.pdf_page,
+            card_field.source.block_index,
+            card_field.source.row,
+            card_field.source.column,
+        )
+        fields_by_source[source_key] = card_field
+
+    alias_origins: dict[
+        str,
+        list[
+            tuple[
+                tuple[str, int, int, int | None, int | None],
+                str,
+                str,
+            ]
+        ],
+    ] = {}
+    for source_key, card_field in fields_by_source.items():
+        variable = card_field.variable or ""
+        for alias in _card_field_alias_tokens(variable):
+            alias_key = _normalized_variable_name(alias)
+            if not alias_key:
+                continue
+            alias_origins.setdefault(alias_key, []).append(
+                (source_key, variable, alias)
+            )
+
+    # An alias is safe only when it identifies one Card field and is not also
+    # an independent catalog variable.  The source field spelling remains in
+    # ``variable_catalog``; aliases are lookup-only.
+    for alias_key, origins in alias_origins.items():
+        if alias_key in lookup or len(origins) != 1:
+            continue
+        _source_key, source_variable, alias_spelling = origins[0]
+        lookup[alias_key] = alias_spelling
+        lookup.exact_only_keys.add(alias_key)
+        keyword._catalog_alias_targets[alias_key] = [source_variable]
+    return lookup
+
+
+def _catalog_items(lookup: dict[str, str]):
+    exact_only = getattr(lookup, "exact_only_keys", set())
+    return ((key, value) for key, value in lookup.items() if key not in exact_only)
+
+
+def _catalog_values(lookup: dict[str, str]):
+    return (value for _key, value in _catalog_items(lookup))
 
 
 def _match_variable(lookup: dict[str, str], text: str) -> str | None:
@@ -969,7 +1325,7 @@ def _match_variable(lookup: dict[str, str], text: str) -> str | None:
         return exact
     candidates = [
         variable
-        for key, variable in lookup.items()
+        for key, variable in _catalog_items(lookup)
         if len(key) == len(normalized)
         and all(
             left == right or {left, right} == {"0", "O"}
@@ -988,18 +1344,19 @@ def _record_confusable_variable_match(
     keyword: KeywordIR,
     source_text: str,
     matched_variable: str | None,
+    source_ref: BlockSourceRef,
 ) -> None:
     if matched_variable is None:
         return
-    source = _normalized_variable_name(source_text)
+    normalized_source = _normalized_variable_name(source_text)
     target = _normalized_variable_name(matched_variable)
-    if source == target:
+    if normalized_source == target:
         return
     if not (
-        len(source) == len(target)
+        len(normalized_source) == len(target)
         and all(
             left == right or {left, right} == {"0", "O"}
-            for left, right in zip(source, target)
+            for left, right in zip(normalized_source, target)
         )
     ):
         return
@@ -1017,6 +1374,7 @@ def _record_confusable_variable_match(
                 "VARIABLE_IDENTIFIER_CONFUSABLE_MATCH",
                 message,
                 severity="info",
+                source=source_ref,
             )
         )
 
@@ -1038,7 +1396,7 @@ def _match_variable_family(
         pattern = re.compile(rf"^{re.escape(prefix)}\d+{re.escape(suffix)}$")
         matches = [
             value
-            for value in lookup.values()
+            for value in _catalog_values(lookup)
             if pattern.fullmatch(_normalized_variable_name(value))
         ]
         if matches:
@@ -1065,7 +1423,7 @@ def _match_variable_family(
         re.IGNORECASE,
     ):
         numeric_families: dict[str, list[str]] = {}
-        for key, value in lookup.items():
+        for key, value in _catalog_items(lookup):
             match = re.fullmatch(r"([A-Z_]+)(\d+)", key)
             if match is not None:
                 numeric_families.setdefault(match.group(1), []).append(value)
@@ -1095,7 +1453,7 @@ def _match_variable_family(
                     prefix = prefixes.pop()
                     matches = [
                         value
-                        for value in lookup.values()
+                        for value in _catalog_values(lookup)
                         if _normalized_variable_name(value).startswith(prefix)
                         and _normalized_variable_name(value)[len(prefix) :].isdigit()
                     ]
@@ -1112,7 +1470,7 @@ def _match_variable_family(
                 prefix = prefixes.pop()
                 matches = [
                     value
-                    for value in lookup.values()
+                    for value in _catalog_values(lookup)
                     if _normalized_variable_name(value).startswith(prefix)
                     and _normalized_variable_name(value)[len(prefix) :].isdigit()
                 ]
@@ -1135,7 +1493,7 @@ def _match_variable_family(
             prefixes.append(prefix)
     if not prefixes:
         return None
-    values = list(lookup.values())
+    values = list(_catalog_values(lookup))
     matches = [
         value
         for value in values
@@ -1323,6 +1681,12 @@ def _referenced_catalog_variable(
 def _refresh_variable_catalog(keyword: KeywordIR) -> None:
     seen_variables: set[str] = set()
     keyword.variable_catalog = []
+    for variable in keyword._catalog_hints:
+        normalized = variable.strip()
+        key = normalized.casefold()
+        if normalized and key not in seen_variables:
+            seen_variables.add(key)
+            keyword.variable_catalog.append(normalized)
     for card in keyword.cards:
         for field in card.fields:
             if field.variable is None:
@@ -1334,11 +1698,58 @@ def _refresh_variable_catalog(keyword: KeywordIR) -> None:
                 keyword.variable_catalog.append(normalized)
 
 
+def _preseed_variable_catalog(keyword: KeywordIR) -> None:
+    """Collect exact Card variables before the ordered semantic pass.
+
+    Manuals can place a Card definition after its Variable Description.  This
+    prepass exposes only variables from the same fixed-slot Card structures
+    accepted by the main classifier; it does not classify or rewrite blocks.
+    """
+
+    hints: list[str] = []
+    hint_fields: list[CardFieldIR] = []
+    seen: set[str] = set()
+    for sourced in keyword.unclassified_blocks:
+        block = sourced.block
+        if not isinstance(block, TableBlock):
+            continue
+        page_has_ambiguous_keyword_boundary = any(
+            issue.pdf_page == sourced.source.pdf_page
+            and issue.code == "KEYWORD_BOUNDARY_AMBIGUOUS"
+            for issue in keyword.issues
+        )
+        for _label, row_start, row_end in _card_regions(
+            block,
+            allow_structural_labels=not page_has_ambiguous_keyword_boundary,
+        ):
+            for field in _definition_fields(
+                sourced, row_start, row_end, issues=[]
+            ):
+                if field.variable is None:
+                    continue
+                hint_fields.append(field)
+                variable = field.variable.strip()
+                key = variable.casefold()
+                if variable and key not in seen:
+                    seen.add(key)
+                    hints.append(variable)
+    keyword._catalog_hints = hints
+    keyword._catalog_hint_fields = hint_fields
+    _refresh_variable_catalog(keyword)
+
+
 def _get_variable_description(
     keyword: KeywordIR,
     variable: str,
     applies_to: list[str] | None = None,
 ) -> VariableDescriptionIR:
+    alias_targets = keyword._catalog_alias_targets.get(
+        _normalized_variable_name(variable)
+    )
+    if alias_targets is not None and (
+        applies_to is None or applies_to == [variable]
+    ):
+        applies_to = alias_targets
     for description in keyword.variable_descriptions:
         if description.variable.casefold() == variable.casefold():
             if applies_to:
@@ -1441,7 +1852,9 @@ def _append_variable_table(
         label = row[0].text.strip() if row else ""
         if label:
             matched_variable = _match_variable_table_heading(lookup, label)
-            _record_confusable_variable_match(keyword, label, matched_variable)
+            _record_confusable_variable_match(
+                keyword, label, matched_variable, sourced.source
+            )
             family_variables = (
                 None
                 if matched_variable is not None
@@ -1461,6 +1874,7 @@ def _append_variable_table(
                             "variable descriptions were indexed from an explicit "
                             "VARIABLE/DESCRIPTION table because no Card variable "
                             "catalog was available",
+                            source=sourced.source,
                         )
                     )
                     missing_catalog_reported = True
@@ -1476,6 +1890,7 @@ def _append_variable_table(
                                 "VARIABLE_DESCRIPTION_CONTINUATION_ORPHAN",
                                 "variable description continuation rows have no "
                                 "matched variable title",
+                                source=sourced.source,
                             )
                         )
                         orphan_reported = True
@@ -1497,6 +1912,7 @@ def _append_variable_table(
                         "VARIABLE_DESCRIPTION_UNMATCHED_TITLE",
                         f"variable description title {label!r} is not present in "
                         "the Card variable catalog",
+                        source=sourced.source,
                     )
                 )
                 continue
@@ -1517,6 +1933,7 @@ def _append_variable_table(
                         "VARIABLE_DESCRIPTION_CONTINUATION_ORPHAN",
                         "variable description continuation rows have no matched "
                         "variable title",
+                        source=sourced.source,
                     )
                 )
                 orphan_reported = True
@@ -1637,7 +2054,15 @@ def _classify_strong_semantics(keyword: KeywordIR) -> None:
             continue
 
         if isinstance(block, TableBlock):
-            regions = _card_regions(block)
+            page_has_ambiguous_keyword_boundary = any(
+                issue.pdf_page == sourced.source.pdf_page
+                and issue.code == "KEYWORD_BOUNDARY_AMBIGUOUS"
+                for issue in keyword.issues
+            )
+            regions = _card_regions(
+                block,
+                allow_structural_labels=not page_has_ambiguous_keyword_boundary,
+            )
             if regions:
                 state = "cards"
                 variable_region = False
@@ -1726,7 +2151,7 @@ def _classify_strong_semantics(keyword: KeywordIR) -> None:
                 matched_variable = _match_leading_variable(lookup, text)
             if matched_variable is not None:
                 _record_confusable_variable_match(
-                    keyword, text, matched_variable
+                    keyword, text, matched_variable, sourced.source
                 )
                 state = "variables"
                 variable_region = True
@@ -1796,7 +2221,7 @@ def _classify_strong_semantics(keyword: KeywordIR) -> None:
                 )
             if text:
                 _record_confusable_variable_match(
-                    keyword, text, matched_variable
+                    keyword, text, matched_variable, sourced.source
                 )
             if matched_variable is not None:
                 current_variable = matched_variable
@@ -1827,6 +2252,7 @@ def _classify_strong_semantics(keyword: KeywordIR) -> None:
                             "VARIABLE_DESCRIPTION_UNMATCHED_TITLE",
                             f"variable description title {text!r} is not present in "
                             "the Card variable catalog",
+                            source=sourced.source,
                         )
                     )
             continue
@@ -1846,16 +2272,68 @@ def _classify_strong_semantics(keyword: KeywordIR) -> None:
     _refresh_variable_catalog(keyword)
 
 
-def _title_anchor_indices(section: SectionIR, pdf_page: int) -> list[int]:
+def _title_anchor_candidates(
+    section: SectionIR, pdf_page: int
+) -> list[tuple[int, int, str]]:
     page = next((item for item in section.pages if item.pdf_page == pdf_page), None)
     if page is None:
         return []
-    return [
-        index
-        for index, block in enumerate(page.blocks)
-        if isinstance(block, TextBlock)
-        and _is_strong_keyword_title(block.text, section.name)
+    candidates: list[tuple[int, int, str]] = []
+    for index, block in enumerate(page.blocks):
+        if not isinstance(block, TextBlock):
+            continue
+        rank = _keyword_title_match_rank(block.text, section.name)
+        key = _normalized_title_line(block.text)
+        if rank is not None and key is not None:
+            candidates.append((index, rank, key))
+    return candidates
+
+
+def _title_anchor_indices(section: SectionIR, pdf_page: int) -> list[int]:
+    """Compatibility helper retained for focused tests and callers."""
+
+    return [index for index, _rank, _key in _title_anchor_candidates(section, pdf_page)]
+
+
+def _select_title_anchor(
+    section: SectionIR, pdf_page: int
+) -> tuple[int, str] | None:
+    """Select one strong anchor without accepting fuzzy or distant duplicates."""
+
+    page = _page_for(section, pdf_page)
+    if page is None:
+        return None
+    candidates = [
+        candidate
+        for candidate in _title_anchor_candidates(section, pdf_page)
+        if not _keyword_title_requires_header(
+            page.blocks[candidate[0]].text, section.name
+        )
+        or _keyword_header_confirms_title(page, section.name)
     ]
+    if not candidates:
+        return None
+    best_rank = max(rank for _index, rank, _key in candidates)
+    best = [item for item in candidates if item[1] == best_rank]
+    if len(best) == 1:
+        index, _rank, key = best[0]
+        return index, key
+
+    # A repeated title generated by the layout/OCR pass is safe to collapse
+    # only when the equivalent anchors form one contiguous run.  Non-adjacent
+    # duplicates remain ambiguous because either could be the true boundary.
+    keys = {key for _index, _rank, key in best}
+    indices = sorted(index for index, _rank, _key in best)
+    if len(keys) != 1:
+        return None
+    for left, right in zip(indices, indices[1:]):
+        for block in page.blocks[left + 1 : right]:
+            if isinstance(block, (HeaderBlock, FooterBlock)):
+                continue
+            if isinstance(block, TextBlock) and not block.text.strip():
+                continue
+            return None
+    return indices[0], next(iter(keys))
 
 
 def _page_for(section: SectionIR, pdf_page: int):
@@ -1880,35 +2358,93 @@ def _boundary_slices(
         if len(owner_indices) <= 1:
             continue
         owners = sorted(owner_indices)
-        conventional_pair = False
-        if len(owners) == 2:
-            left_index, right_index = owners
-            left = sections[left_index]
-            right = sections[right_index]
-            conventional_pair = bool(
-                left.document_id == document_id
-                and right.document_id == document_id
-                and left.source_pages
-                and right.source_pages
-                and left.source_pages[-1].pdf_page == pdf_page
-                and right.source_pages[0].pdf_page == pdf_page
-            )
-            anchors = _title_anchor_indices(right, pdf_page)
-            page = _page_for(right, pdf_page) or _page_for(left, pdf_page)
-            if conventional_pair and page is not None and len(anchors) == 1:
-                anchor = anchors[0]
-                slices[(left_index, pdf_page)] = (0, anchor)
-                slices[(right_index, pdf_page)] = (anchor, len(page.blocks))
-                message = (
-                    f"shared PDF page {pdf_page} was split at block {anchor}, "
-                    f"the strong title anchor for {right.name}"
+        conventional_shape = bool(owners)
+        for position, owner_index in enumerate(owners):
+            owner = sections[owner_index]
+            if not owner.source_pages:
+                conventional_shape = False
+                break
+            if position == 0:
+                conventional_shape &= owner.source_pages[-1].pdf_page == pdf_page
+            elif position == len(owners) - 1:
+                conventional_shape &= owner.source_pages[0].pdf_page == pdf_page
+            else:
+                conventional_shape &= (
+                    owner.source_pages[0].pdf_page == pdf_page
+                    and owner.source_pages[-1].pdf_page == pdf_page
                 )
-                issues[left_index].append(
-                    _issue("KEYWORD_BOUNDARY_RESOLVED", message, severity="info")
+
+        page = _page_for(sections[owners[-1]], pdf_page) if owners else None
+        selected: list[tuple[int, int, str]] = []
+        if conventional_shape and page is not None:
+            for owner_index in owners[1:]:
+                selected_anchor = _select_title_anchor(
+                    sections[owner_index], pdf_page
                 )
-                issues[right_index].append(
-                    _issue("KEYWORD_BOUNDARY_RESOLVED", message, severity="info")
+                if selected_anchor is None:
+                    selected = []
+                    break
+                selected.append((owner_index, *selected_anchor))
+            if selected and all(
+                left[1] < right[1]
+                for left, right in zip(selected, selected[1:])
+            ):
+                boundaries = [0, *(item[1] for item in selected), len(page.blocks)]
+                slices_have_content = True
+                for position, owner_index in enumerate(owners):
+                    owner = sections[owner_index]
+                    if len(owner.pages) != 1:
+                        continue
+                    start, end = boundaries[position], boundaries[position + 1]
+                    meaningful = 0
+                    for block_index in range(start, end):
+                        block = page.blocks[block_index]
+                        if isinstance(block, (HeaderBlock, FooterBlock)):
+                            continue
+                        if (
+                            position > 0
+                            and block_index == start
+                            and isinstance(block, TextBlock)
+                            and _is_strong_keyword_title(block.text, owner.name)
+                        ):
+                            continue
+                        meaningful += 1
+                    if meaningful == 0:
+                        slices_have_content = False
+                        break
+                if not slices_have_content:
+                    selected = []
+            if selected and all(
+                left[1] < right[1]
+                for left, right in zip(selected, selected[1:])
+            ):
+                boundaries = [0, *(item[1] for item in selected), len(page.blocks)]
+                anchor_summary = ", ".join(
+                    f"{anchor} ({sections[owner_index].name})"
+                    for owner_index, anchor, _key in selected
                 )
+                for position, owner_index in enumerate(owners):
+                    slices[(owner_index, pdf_page)] = (
+                        boundaries[position],
+                        boundaries[position + 1],
+                    )
+                    message = (
+                        f"shared PDF page {pdf_page} was split using ordered "
+                        f"strong Keyword title anchors at {anchor_summary}"
+                    )
+                    source = next(
+                        page_ref
+                        for page_ref in sections[owner_index].source_pages
+                        if page_ref.pdf_page == pdf_page
+                    )
+                    issues[owner_index].append(
+                        _issue(
+                            "KEYWORD_BOUNDARY_RESOLVED",
+                            message,
+                            severity="info",
+                            source=source,
+                        )
+                    )
                 continue
 
         owner_names = ", ".join(sections[index].section_id for index in owners)
@@ -1917,7 +2453,14 @@ def _boundary_slices(
             f"Keyword title anchor; preserving content for {owner_names}"
         )
         for index in owners:
-            issues[index].append(_issue("KEYWORD_BOUNDARY_AMBIGUOUS", message))
+            source = next(
+                page
+                for page in sections[index].source_pages
+                if page.pdf_page == pdf_page
+            )
+            issues[index].append(
+                _issue("KEYWORD_BOUNDARY_AMBIGUOUS", message, source=source)
+            )
     return slices, issues
 
 
@@ -2008,6 +2551,7 @@ def reconstruct_keywords(sections: list[SectionIR]) -> list[KeywordIR]:
             ignored_blocks=stream.ignored_blocks,
             issues=issues,
         )
+        _preseed_variable_catalog(keyword)
         _classify_strong_semantics(keyword)
         keyword.issues.extend(validate_keyword_ir(keyword))
         if not keyword.content_blocks():
