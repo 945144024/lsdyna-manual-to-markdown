@@ -501,6 +501,22 @@ manual-to-markdown sample-regression \
 
 该模式校验 release 和源 PDF hash，原样保留冻结的章节/页面选择并重新生成 detection 与 Markdown；不得与 `--anchor` 同时使用。
 
+独立 holdout 必须排除冻结样本中的全部 SectionMap 章节，并使用不同 seed：
+
+```bash
+manual-to-markdown sample-regression \
+  --manuals-dir manuals \
+  --release R16 \
+  --intermediate-dir workspace/regression/r16/intermediate \
+  --pageir-dir workspace/regression/r16/pageir \
+  --output-dir workspace/regression/r16/semantic-holdout \
+  --seed 20260822 \
+  --holdout-of workspace/regression/r16/semantic-sample/sample_manifest.json
+```
+
+`--holdout-of` 同时校验 release 与源 PDF hash。排除以 `document_id + section_id`
+为单位，避免共享边界页或同一章节的不同页范围同时进入固定样本与 holdout。
+
 每个样本检测：
 
 - PageIR 是否覆盖完整候选页范围；

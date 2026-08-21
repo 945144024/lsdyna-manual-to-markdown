@@ -4,4 +4,4 @@ This package provides tools to process user-supplied LS-DYNA manuals into
 structured, LLM-friendly Markdown corpora.
 """
 
-__version__ = "0.1.0-dev"
+__version__ = "0.1.0b1"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from dataclasses import dataclass
 from typing import Callable, TextIO
 
@@ -35,11 +36,13 @@ class TerminalParseProgress:
     ) -> None:
         self.total_pages = total_pages
         self.completed_pages = completed_pages
+        self._initial_completed_pages = completed_pages
         self.stream = stream
         self.width = width
         self._tty = bool(getattr(stream, "isatty", lambda: False)())
         self._last_length = 0
         self._last_non_tty_phase: str | None = None
+        self._started_at = time.monotonic()
 
     def __call__(self, event: ParseProgressEvent) -> None:
         self.completed_pages = min(
@@ -89,7 +92,15 @@ class TerminalParseProgress:
             first, last = event.pdf_pages[0], event.pdf_pages[-1]
             page_label = str(first) if first == last else f"{first}-{last}"
             context.append(f"pages={page_label}")
+        elapsed = max(time.monotonic() - self._started_at, 0.0)
+        processed = max(self.completed_pages - self._initial_completed_pages, 0)
+        rate = processed / elapsed if elapsed > 0 else 0.0
+        remaining = max(self.total_pages - self.completed_pages, 0)
+        eta = remaining / rate if rate > 0 else None
+        timing = f" elapsed={elapsed:.1f}s rate={rate:.2f}/s"
+        timing += f" eta={eta:.1f}s" if eta is not None else " eta=--"
         return (
             f"[{bar}] {self.completed_pages}/{self.total_pages} pages "
             + " ".join(context)
+            + timing
         )

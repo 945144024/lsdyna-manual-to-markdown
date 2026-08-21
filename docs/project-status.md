@@ -1,6 +1,6 @@
 # 项目开发状态
 
-本文记录 `0.1.0-dev` 的当前实现、验证证据、质量边界和后续工作。用户安装与运行
+本文记录 `0.1.0b1` 的当前实现、验证证据、质量边界和后续工作。用户安装与运行
 方式见根目录 `README.md`。
 
 ## 1. 当前定位
@@ -138,7 +138,7 @@ block、600 个 TableBlock、285 个 span 单元、586 个公式文本和 48 个
 
 ## 8. 自动化验证
 
-当前自动化测试共 257 个，全部通过。覆盖范围包括：
+当前自动化测试共 261 个，全部通过。覆盖范围包括：
 
 - discovery、Inspection、PageMap / SectionMap 与质量门；
 - ParsePlan、checkpoint、raw cache 和 Provider 错误处理；
@@ -148,7 +148,7 @@ block、600 个 TableBlock、285 个 span 单元、586 个公式文本和 48 个
 - 固定样本 manifest 复查与 Markdown 路径稳定性；
 - 凭证清理、signed URL 脱敏和合成输入端到端测试。
 
-发布前还应在 CI 中使用 Windows 与 Ubuntu、Python 3.10-3.12 执行 pip 安装、测试、
+GitHub Actions 已使用 Windows 与 Ubuntu、Python 3.10-3.12 执行 pip 安装、测试、
 `compileall` 和包构建。真实 Manual 与模型文件不进入 CI 或公开仓库。
 
 ## 9. 已知质量边界
@@ -166,10 +166,8 @@ block、600 个 TableBlock、285 个 span 单元、586 个公式文本和 48 个
 规则扩展必须基于真实页面中的唯一、可重复程序证据。不得为了降低 warning 数量而
 引入手册特例、模糊匹配、上下文补字或文本层覆盖。
 
-## 10. 发布前剩余工作
+## 10. 后续工作
 
-1. 固化并提交当前 Windows、pip、文档和仓库安全改动；
-2. 增加 Windows/Ubuntu CI 和公开测试版发布说明；
-3. 将版本元数据更新为公开测试版版本并创建 release tag；
-4. 在新 Manual release 或新模型输出出现后采集独立样本，只在出现新结构证据时
-   扩展通用规则。
+1. 为 R12-R16 分别冻结固定语义样本和互斥 holdout，再从 R16 开始完整构建验收；
+2. 在各版本新模型输出中出现新结构证据时，继续扩展通用规则；
+3. 在 Corpus 合同稳定后设计 Markdown 条目之间的可审计交叉引用。

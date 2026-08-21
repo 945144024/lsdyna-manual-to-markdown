@@ -198,6 +198,8 @@ def test_build_runs_one_click_pipeline_success(monkeypatch, tmp_path):
     assert result.completed_pages == result.total_pages == 6
     assert result.section_count == 4
     assert result.manifest_path == corpus / "manifest.jsonl"
+    assert set(result.stage_durations) == {"inspect", "parse", "reconstruct"}
+    assert result.total_duration_seconds >= sum(result.stage_durations.values())
 
 
 def test_build_real_parse_and_reconstruct_from_one_entry(monkeypatch, tmp_path):

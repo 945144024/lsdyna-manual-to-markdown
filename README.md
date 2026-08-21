@@ -147,6 +147,12 @@ PaddleOCR 运行环境。自动准备不会安装显卡驱动；`llama-server`�
 
 ## 生成 Markdown
 
+可先运行无模型调用的环境检查：
+
+```powershell
+.\.venv\Scripts\manual-to-markdown.exe doctor configs\local.yaml
+```
+
 Windows：
 
 ```powershell

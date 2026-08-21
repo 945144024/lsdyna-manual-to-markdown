@@ -24,3 +24,6 @@ def test_terminal_progress_is_page_based_and_resume_aware():
     assert "7/10 pages" in rendered
     assert "pages=24-26" in rendered
     assert "[#######---]" in rendered
+    assert "elapsed=" in rendered
+    assert "rate=" in rendered
+    assert "eta=" in rendered

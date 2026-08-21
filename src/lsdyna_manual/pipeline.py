@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -144,6 +145,8 @@ class BuildResult:
     section_count: int = 0
     manifest_path: Path | None = None
     reports_path: Path | None = None
+    stage_durations: dict[str, float] = field(default_factory=dict)
+    total_duration_seconds: float = 0.0
 
 
 @dataclass
@@ -154,6 +157,7 @@ class ParsingResult:
     completed_pages: int
     failed_pages: int
     checkpoint_path: Path
+    elapsed_seconds: float = 0.0
 
 
 @dataclass
@@ -166,6 +170,7 @@ class ReconstructionResult:
     failed_count: int
     manifest_path: Path
     reports_path: Path
+    elapsed_seconds: float = 0.0
 
 
 @dataclass
@@ -302,6 +307,7 @@ def run_parsing(
     intermediate_dir: Path | str | None = None,
 ) -> ParsingResult:
     """Run resumable page parsing from existing inspection artifacts."""
+    started_at = time.monotonic()
     config_path = Path(config_path)
     config = load_config(config_path)
     release, documents = _resolve_documents(config)
@@ -486,6 +492,7 @@ def run_parsing(
             completed_pages=completed_pages,
             failed_pages=failed_pages,
             checkpoint_path=checkpoint_path,
+            elapsed_seconds=time.monotonic() - started_at,
         )
 
     status = "warning" if failed_pages else "success"
@@ -503,6 +510,7 @@ def run_parsing(
         completed_pages=completed_pages,
         failed_pages=failed_pages,
         checkpoint_path=checkpoint_path,
+        elapsed_seconds=time.monotonic() - started_at,
     )
 
 
@@ -686,6 +694,7 @@ def run_reconstruction(
     log: Callable[[str], None] = print,
 ) -> ReconstructionResult:
     """Build Markdown and manifest artifacts from existing PageIR files."""
+    started_at = time.monotonic()
 
     config_path = Path(config_path)
     config = load_config(config_path)
@@ -1168,6 +1177,7 @@ def run_reconstruction(
         failed_count=failed_count,
         manifest_path=manifest_path,
         reports_path=reports_dir,
+        elapsed_seconds=time.monotonic() - started_at,
     )
 
 
@@ -1182,14 +1192,18 @@ def run_build(
     """Run inspect, resumable parsing, and reconstruction in one command."""
 
     config_path = Path(config_path)
+    started_at = time.monotonic()
     config = load_config(config_path)
     release, documents = _resolve_documents(config)
     document_records = [document.metadata() for document in documents]
     log(f"LS-DYNA Manual to Markdown {__version__}")
     log(f"build release {release}: {len(documents)} document(s)")
 
+    inspect_started = time.monotonic()
     log("[1/3] inspect: generate PageMap / SectionMap")
     run_inspection(config_path, log=log)
+    inspect_seconds = time.monotonic() - inspect_started
+    log(f"      inspect elapsed={inspect_seconds:.1f}s")
 
     log("[2/3] parse: resume or generate PageIR")
     parsing = run_parsing(
@@ -1199,6 +1213,8 @@ def run_build(
         on_progress=on_progress,
         allow_runtime_install=allow_runtime_install,
     )
+    parse_seconds = parsing.elapsed_seconds
+    log(f"      parse elapsed={parse_seconds:.1f}s")
     if parsing.exit_code == EXIT_PAUSED:
         log(
             "build paused during parsing; re-run the same command to resume "
@@ -1212,10 +1228,14 @@ def run_build(
             total_pages=parsing.total_pages,
             completed_pages=parsing.completed_pages,
             failed_pages=parsing.failed_pages,
+            stage_durations={"inspect": inspect_seconds, "parse": parse_seconds},
+            total_duration_seconds=time.monotonic() - started_at,
         )
 
     log("[3/3] reconstruct: write Markdown, manifest, and reports")
     reconstruction = run_reconstruction(config_path, log=log)
+    reconstruct_seconds = reconstruction.elapsed_seconds
+    log(f"      reconstruct elapsed={reconstruct_seconds:.1f}s")
     status = reconstruction.status
     exit_code = reconstruction.exit_code
     if parsing.exit_code == EXIT_WARNING and exit_code == EXIT_SUCCESS:
@@ -1257,6 +1277,12 @@ def run_build(
         f"{parsing.total_pages}, sections={reconstruction.section_count}, "
         f"manifest={reconstruction.manifest_path}"
     )
+    total_seconds = time.monotonic() - started_at
+    log(
+        "build elapsed: "
+        f"inspect={inspect_seconds:.1f}s parse={parse_seconds:.1f}s "
+        f"reconstruct={reconstruct_seconds:.1f}s total={total_seconds:.1f}s"
+    )
     return BuildResult(
         exit_code=exit_code,
         status=status,
@@ -1269,6 +1295,12 @@ def run_build(
         section_count=reconstruction.section_count,
         manifest_path=reconstruction.manifest_path,
         reports_path=reconstruction.reports_path,
+        stage_durations={
+            "inspect": inspect_seconds,
+            "parse": parse_seconds,
+            "reconstruct": reconstruct_seconds,
+        },
+        total_duration_seconds=total_seconds,
     )
 
 

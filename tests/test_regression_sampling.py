@@ -184,6 +184,42 @@ def test_sampling_keeps_explicit_anchor_outside_random_strata(tmp_path):
     ]["anchors"]
 
 
+def test_holdout_excludes_frozen_sample_sections(tmp_path):
+    document = _document(tmp_path, "keyword-volume-2", 2)
+    sections = _sections(document.document_id, document.volume)
+    documents = {document.document_id: document}
+    navigation = {document.document_id: sections}
+    source_text = {document.document_id: ["plain"] * 80}
+    fixed = build_sample_manifest(
+        release="R17",
+        documents=documents,
+        navigation=navigation,
+        source_text=source_text,
+        seed=11,
+        targets={"short": 1, "medium": 1, "long": 1},
+    )
+    excluded = {
+        (sample["document_id"], sample["section_id"])
+        for sample in fixed["samples"]
+    }
+    holdout = build_sample_manifest(
+        release="R17",
+        documents=documents,
+        navigation=navigation,
+        source_text=source_text,
+        seed=12,
+        targets={"short": 1, "medium": 1, "long": 1},
+        exclude_sections=excluded,
+    )
+
+    selected = {
+        (sample["document_id"], sample["section_id"])
+        for sample in holdout["samples"]
+    }
+    assert selected.isdisjoint(excluded)
+    assert holdout["selection"]["excluded_section_count"] == len(excluded)
+
+
 def test_keyword_quality_findings_name_concrete_candidates():
     source = BlockSourceRef("keyword-volume-2", 1, 0)
     table = SourcedBlock(

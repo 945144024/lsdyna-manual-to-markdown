@@ -15,6 +15,7 @@ from lsdyna_manual.pipeline import (
     run_parsing,
     run_reconstruction,
 )
+from lsdyna_manual.preflight import run_preflight
 from lsdyna_manual.providers.base import ProviderError
 from lsdyna_manual.regression_sampling import (
     run_manifest_detection,
@@ -114,6 +115,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="detect this frozen manifest instead of selecting a new sample",
     )
     sample_cmd.add_argument(
+        "--holdout-of",
+        help="select an independent set excluding sections in this frozen manifest",
+    )
+    subparsers.add_parser(
+        "doctor", help="check configuration and runtime prerequisites without inference"
+    ).add_argument("config", help="path to the YAML config file")
+    sample_cmd.add_argument(
         "--anchor",
         action="append",
         default=[],
@@ -126,11 +134,17 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     try:
         if args.command == "build":
+            preflight = run_preflight(args.config)
+            if preflight.failed:
+                return EXIT_FAILED
             result = run_build(
                 args.config,
                 allow_runtime_install=args.allow_runtime_install,
             )
             return result.exit_code
+        if args.command == "doctor":
+            result = run_preflight(args.config)
+            return EXIT_FAILED if result.failed else EXIT_SUCCESS
         if args.command == "inspect":
             run_inspection(args.config)
             return EXIT_SUCCESS
@@ -160,9 +174,10 @@ def main(argv: list[str] | None = None) -> int:
                 anchors.append(tuple(value.split(":", 1)))
             try:
                 if args.sample_manifest is not None:
-                    if anchors:
+                    if anchors or args.holdout_of:
                         raise ConfigError(
-                            "--anchor cannot be combined with --sample-manifest"
+                            "--anchor and --holdout-of cannot be combined with "
+                            "--sample-manifest"
                         )
                     manifest, report = run_manifest_detection(
                         manifest_path=args.sample_manifest,
@@ -181,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
                         output_dir=args.output_dir,
                         seed=args.seed,
                         anchor_sections=anchors,
+                        exclude_manifest_path=args.holdout_of,
                     )
             except ValueError as exc:
                 raise ConfigError(str(exc)) from exc

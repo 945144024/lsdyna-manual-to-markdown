@@ -130,7 +130,7 @@ manual:
       sha256: "…"
       support_level: "verified"
 builder:
-  version: "0.1.0-dev"
+  version: "0.1.0b1"
   # 记录实际构建使用的 Provider；取值取决于配置。
   parser_provider: "<provider used for the build>"
   parser_model: "<provider model name>"

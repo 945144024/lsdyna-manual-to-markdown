@@ -186,11 +186,13 @@ def build_sample_manifest(
     targets: Mapping[str, int] = DEFAULT_TARGETS,
     max_section_pages: int = DEFAULT_MAX_SECTION_PAGES,
     anchor_sections: Iterable[tuple[str, str]] = (),
+    exclude_sections: Iterable[tuple[str, str]] = (),
 ) -> dict:
     """Build a reproducible stratified sample plus rare-feature supplements."""
 
     source_text = source_text or {}
     anchor_sections = tuple(anchor_sections)
+    exclude_sections = frozenset(exclude_sections)
     shared_counts: Counter[tuple[str, int]] = Counter(
         (section.document_id or "", page)
         for sections in navigation.values()
@@ -207,6 +209,8 @@ def build_sample_manifest(
         text_by_section = _page_texts_for_sections(sections, text_pages)
         buckets: dict[str, list[Section]] = {bucket: [] for bucket in LENGTH_BUCKETS}
         for section in sections:
+            if _section_key(section) in exclude_sections:
+                continue
             page_count = len(section.pdf_pages)
             if page_count <= 0 or page_count > max_section_pages:
                 continue
@@ -271,6 +275,8 @@ def build_sample_manifest(
         if section is None:
             missing_anchors.append(":".join(key))
             continue
+        if key in exclude_sections:
+            continue
         if key in selected:
             selected[key]["selection_reasons"].append("anchor:explicit")
             continue
@@ -315,6 +321,7 @@ def build_sample_manifest(
         key: section
         for document_id, sections in navigation.items()
         for section in sections
+        if _section_key(section) not in exclude_sections
         if len(section.pdf_pages) <= max_section_pages
         for key in [_section_key(section)]
     }
@@ -406,6 +413,7 @@ def build_sample_manifest(
             "uncovered_features": uncovered_features,
             "anchors": [":".join(key) for key in anchor_sections],
             "missing_anchors": missing_anchors,
+            "excluded_section_count": len(exclude_sections),
         },
         "documents": source_records,
         "samples": records,
@@ -831,10 +839,29 @@ def run_sampling(
     output_dir: Path,
     seed: int = 20260817,
     anchor_sections: Iterable[tuple[str, str]] = (),
+    exclude_manifest_path: Path | None = None,
 ) -> tuple[dict, dict]:
     """Generate and detect one semantic sample set for a release."""
 
     documents = _discover_documents(Path(manuals_dir), release)
+    excluded_sections: set[tuple[str, str]] = set()
+    if exclude_manifest_path is not None:
+        exclude_manifest_path = Path(exclude_manifest_path)
+        load_sample_page_keys(
+            exclude_manifest_path,
+            release=release,
+            documents=documents,
+        )
+        try:
+            excluded_payload = json.loads(
+                exclude_manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read exclusion manifest: {exc}") from exc
+        excluded_sections = {
+            (sample["document_id"], sample["section_id"])
+            for sample in excluded_payload.get("samples", [])
+        }
     navigation = load_navigation(Path(intermediate_dir))
     missing = sorted(set(documents) - set(navigation))
     if missing:
@@ -853,6 +880,7 @@ def run_sampling(
         source_text=source_text,
         seed=seed,
         anchor_sections=anchor_sections,
+        exclude_sections=excluded_sections,
     )
     report = detect_sample_manifest(
         manifest=manifest,
@@ -937,6 +965,11 @@ def main(argv: list[str] | None = None) -> int:
         help="detect this frozen manifest instead of selecting a new sample",
     )
     parser.add_argument(
+        "--holdout-of",
+        type=Path,
+        help="select an independent set excluding sections in this frozen manifest",
+    )
+    parser.add_argument(
         "--anchor",
         action="append",
         default=[],
@@ -950,8 +983,10 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"invalid --anchor {value!r}; expected DOCUMENT_ID:SECTION_ID")
         anchors.append(tuple(value.split(":", 1)))
     if args.sample_manifest is not None:
-        if anchors:
-            parser.error("--anchor cannot be combined with --sample-manifest")
+        if anchors or args.holdout_of:
+            parser.error(
+                "--anchor and --holdout-of cannot be combined with --sample-manifest"
+            )
         manifest, report = run_manifest_detection(
             manifest_path=args.sample_manifest,
             manuals_dir=args.manuals_dir,
@@ -969,6 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output_dir,
             seed=args.seed,
             anchor_sections=anchors,
+            exclude_manifest_path=args.holdout_of,
         )
     print(
         f"samples={manifest['summary']['sample_count']} "
